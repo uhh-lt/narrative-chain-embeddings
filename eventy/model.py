@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -12,10 +13,16 @@ class EventyModel(nn.Module):
         num_inputs: int = 5,
         output_vocab: int = 4,
         model_characters: bool = True,
+        class_distribution: Optional[torch.Tensor] = None,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.model_characters = model_characters
+        self.class_distribution = (
+            class_distribution
+            if class_distribution is not None
+            else torch.zeros(output_vocab, dtype=torch.float)
+        )
         self.hidden_size_1 = 1024
         self.hidden_size_2 = 1024
         self.num_inputs = num_inputs
@@ -39,7 +46,7 @@ class EventyModel(nn.Module):
             nn.Sigmoid(),
             nn.Linear(self.hidden_size_2, output_vocab),
         )
-        self.loss = nn.CrossEntropyLoss()
+        self.loss = nn.CrossEntropyLoss(weight=1 / self.class_distribution)
 
     def forward(
         self,

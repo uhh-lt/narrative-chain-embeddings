@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import random
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -65,6 +66,7 @@ class ChainBatch:
     subject_hot_encodings: torch.Tensor
     object_hot_encodings: torch.Tensor
     logits: Optional[torch.Tensor]
+    logits_thresholded: Optional[torch.Tensor]
 
     @classmethod
     def from_chains(cls, chains: List[Chain]):
@@ -80,6 +82,7 @@ class ChainBatch:
             ),
             labels=torch.tensor([chain.label for chain in chains]),
             logits=None,
+            logits_thresholded=None,
         )
         return new
 
@@ -152,7 +155,7 @@ class EventWindowDataset(Dataset):
         file_name: str,
         window_size: int = 5,
         vocabulary: List[str] = PREDICTABLE_LEMMAS,
-        balanced: bool = True,
+        over_sampling: bool = False,
         *args,
         **kwargs
     ):
@@ -161,31 +164,59 @@ class EventWindowDataset(Dataset):
         self.chains = []
         self.vocabulary = vocabulary
         self.window_size = window_size
-        self.balanced = balanced
+        self.over_sampled = over_sampling
         for line in in_file:
             chain = [Event.from_json(e) for e in json.loads(line)]
             windows = get_windows(chain, self.window_size, vocabulary)
             for window in windows:
-                assert window[2].lemma in self.vocabulary
+                assert window[3].lemma in self.vocabulary
             self.chains.extend(windows)
-        # reduce all duplicates
+        # remove all duplicates
         self.chains = list(set(self.chains))
-        if balanced:
-            counter = Counter()
+        if self.over_sampled:
+            lemma_counter = Counter()
             for chain in self.chains:
-                counter.update([chain[window_size // 2].lemma])
-            _least_lemma, least_common_count = list(counter.most_common())[-1]
+                lemma_counter.update([chain[window_size // 2].lemma])
+            _least_lemma, least_common_count = list(lemma_counter.most_common())[-1]
+            _, most_common_count = list(lemma_counter.most_common())[0]
+            num_duplicates_per_item = {
+                k: most_common_count / v for k, v in lemma_counter.items()
+            }
             balanced_chains = []
-            balanced_counter = Counter()
             for chain in self.chains:
-                if (
-                    balanced_counter.get(chain[window_size // 2].lemma, 0)
-                    < least_common_count
+                for x in range(
+                    int(num_duplicates_per_item[chain[window_size // 2].lemma])
                 ):
                     balanced_chains.append(chain)
-                    balanced_counter.update([chain[window_size // 2].lemma])
+                if (
+                    random.random()
+                    <= num_duplicates_per_item[chain[window_size // 2].lemma] % 1
+                ):
+                    balanced_chains.append(chain)
+                # if (
+                #     balanced_counter.get(chain[window_size // 2].lemma, 0)
+                #     < least_common_count
+                # ):
+                #     balanced_chains.append(chain)
+                #     balanced_counter.update([chain[window_size // 2].lemma])
+            random.shuffle(balanced_chains)
             self.chains = balanced_chains
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def get_class_distribution(instance):
+        lemma_counter = Counter()
+        if isinstance(instance, torch.utils.data.Subset):
+            dataset = instance.dataset
+        else:
+            dataset = instance
+        for chain in instance:
+            lemma_counter.update([chain.lemmas[dataset.window_size // 2]])
+        in_order = torch.tensor(
+            [lemma_counter.get(v, 0) for v in dataset.vocabulary],
+            dtype=torch.float,
+        )
+        return torch.nn.functional.normalize(in_order, dim=0, p=1)
 
     def __getitem__(self, n):
         chain = self.chains[n]
