@@ -2,6 +2,8 @@ import dataclasses
 import math
 from sys import prefix
 
+import fasttext
+import numpy as np
 import torch
 import typer
 from catalyst import dl
@@ -10,6 +12,7 @@ from catalyst.callbacks.metrics.confusion_matrix import ConfusionMatrixCallback
 from torch.utils.data import DataLoader
 from torchsampler import ImbalancedDatasetSampler
 
+from eventy.config import Config
 from eventy.dataset import ChainBatch, EventWindowDataset
 from eventy.model import EventyModel
 from eventy.runner import CustomRunner
@@ -39,25 +42,29 @@ def build_vocabulary():
 
 @app.command()
 def main():
-    window_size = 7
+    config = Config.load_file("config.yaml")
     # vocabulary = ["rennen", "lesen", "hassen", "sehen", "stehen"]
     vocabulary = build_vocabulary()
     print("Random chance accuracy:", 1 / len(vocabulary))
-    loaders = get_dataset(vocabulary, window_size=window_size)
+    ft = fasttext.load_model("cc.de.300.bin")
+    loaders = get_dataset(vocabulary, window_size=config.window_size, ft=ft)
     distribution = EventWindowDataset.get_class_distribution(loaders["train"].dataset)
     print("Majority baseline is:", distribution.max().item())
     model = EventyModel(
         output_vocab=len(vocabulary),
-        num_inputs=window_size,
+        num_inputs=config.window_size,
         class_distribution=distribution,
+        vocab_embeddings=torch.tensor(
+            np.stack([ft.get_word_vector(v) for v in vocabulary])
+        ),
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=2e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     runner = CustomRunner(class_distribution=distribution)
     runner.train(
         model=model,
         optimizer=optimizer,
         loaders=loaders,
-        num_epochs=1,
+        num_epochs=config.epochs,
         logdir="./logs",
         callbacks=[
             # this should be accessible on dl. but somehow isn't...
@@ -89,18 +96,20 @@ def main():
     )
 
 
-def get_dataset(vocabulary, window_size):
+def get_dataset(vocabulary, window_size, ft):
     dataset_train = EventWindowDataset(
         "data/train_news_sample.jsonlines",
         vocabulary=vocabulary,
         window_size=window_size,
         over_sampling=False,
+        fast_text=ft,
     )
     dataset_dev = EventWindowDataset(
         "data/dev_news_sample.jsonlines",
         vocabulary=vocabulary,
         window_size=window_size,
         over_sampling=False,
+        fast_text=ft,
     )
     print("Labels", dataset_train.get_label_counts())
     print("Labels relative", dataset_train.get_label_distribution())
@@ -110,12 +119,15 @@ def get_dataset(vocabulary, window_size):
     )
     loader_train = DataLoader(
         dataset_train,
-        collate_fn=ChainBatch.from_chains,
+        collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
         batch_size=8,
         sampler=sampler,
     )
     loader_dev = DataLoader(
-        dataset_dev, collate_fn=ChainBatch.from_chains, batch_size=8, shuffle=True
+        dataset_dev,
+        collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
+        batch_size=8,
+        shuffle=True,
     )
     return {
         "train": loader_train,

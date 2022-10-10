@@ -1,0 +1,9 @@
+batch_size: 32
+window_size: 7
+device: "cuda"
+epochs: 3
+learning_rate: 2e-3
+dataset:
+  train_split: data/train_news.json
+  test_split: data/test_news.json
+  validation_split: data/dev_news.json

@@ -12,11 +12,13 @@ class EventyModel(nn.Module):
         embedding_size: int = 300,
         num_inputs: int = 5,
         output_vocab: int = 4,
+        vocab_embeddings: Optional[torch.Tensor] = None,
         model_characters: bool = True,
         class_distribution: Optional[torch.Tensor] = None,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
+        self.vocab_embeddings = vocab_embeddings
         self.model_characters = model_characters
         self.class_distribution = (
             class_distribution
@@ -47,6 +49,11 @@ class EventyModel(nn.Module):
             nn.Linear(self.hidden_size_2, output_vocab),
         )
         self.loss = nn.CrossEntropyLoss(weight=1 / self.class_distribution)
+        embedding_loss_func = nn.CosineEmbeddingLoss(reduction="none")
+        self.embedding_loss = lambda labels, *args: (
+            embedding_loss_func(*args)
+            * (1 / class_distribution).index_select(0, labels).unsqueeze(0)
+        ).mean()
 
     def forward(
         self,
@@ -54,6 +61,7 @@ class EventyModel(nn.Module):
         subject_hot_encodings: torch.Tensor,
         object_hot_encodings: torch.Tensor,
         labels: torch.Tensor,
+        label_embeddings: torch.Tensor,
     ):
         reshaped = embeddings.reshape(-1, self.chain_input_size)
         if self.model_characters:
@@ -69,14 +77,21 @@ class EventyModel(nn.Module):
             logits = self.input_layer(with_characters)
         else:
             logits = self.input_layer(reshaped)
+        embedding_loss = self.embedding_loss(
+            labels,
+            (self.vocab_embeddings * logits.unsqueeze(-1)).mean(1),
+            label_embeddings,
+            torch.ones(logits.shape[0]),
+        )
         loss = self.loss(logits, labels)
-        return BatchOutput(logits, loss)
+        return BatchOutput(logits, loss, embedding_loss)
 
 
 @dataclass
 class BatchOutput:
     logits: torch.Tensor
     loss: torch.Tensor
+    embedding_loss: torch.Tensor
 
     def __getitem__(self, item):
         return getattr(self, item)

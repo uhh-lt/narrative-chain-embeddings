@@ -52,16 +52,18 @@ class CustomRunner(dl.Runner):
             on_device_batch.subject_hot_encodings,
             on_device_batch.object_hot_encodings,
             on_device_batch.labels,
+            on_device_batch.label_embeddings,
         )
         self.batch.logits = model_output.logits
         self.batch.logits_thresholded = model_output.logits / self.class_distribution
         # log metrics
-        self.batch_metrics.update({"loss": model_output.loss})
+        loss = model_output.embedding_loss
+        self.batch_metrics.update({"loss": loss})
         for key in ["loss"]:
             self.meters[key].update(self.batch_metrics[key].item(), self.batch_size)
         # run model backward pass
         if self.is_train_loader:
-            self.engine.backward(model_output.loss)
+            self.engine.backward(loss)
             self.optimizer.step()
             self.optimizer.zero_grad()
 

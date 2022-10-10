@@ -3,13 +3,24 @@ import pathlib
 from enum import Enum
 from typing import Optional, Union
 
-from pydantic import BaseSettings
+from pydantic import BaseSettings, validator
 from pydantic_loader.yaml_config import load_yaml, save_yaml
 
 
 class Config(BaseSettings):
     device: str
     epochs: int = 1
+    batch_size: int
+    window_size: int
+    learning_rate: float
+    dataset: DatasetConfig
+
+    @validator("window_size")
+    def odd_window_size(cls, val):
+        if val % 2 != 1:
+            raise ValueError("Window needs to be an odd number")
+        else:
+            return val
 
     @staticmethod
     def load_file(path: Union[str, pathlib.Path]):
@@ -20,3 +31,9 @@ class Config(BaseSettings):
         os.makedirs(pathlib.Path(path).parent, exist_ok=True)
         config = save_yaml(self, pathlib.Path(path))
         return config
+
+
+class DatasetConfig(BaseSettings):
+    test_split: str
+    train_split: str
+    validation_split: str

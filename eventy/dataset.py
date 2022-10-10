@@ -54,8 +54,8 @@ class Chain:
         self.label = vocabulary.index(self.lemmas[len(self.lemmas) // 2])
 
     def get_central_lemma(self) -> str:
-        if len(self.lemmas) % 2 != 0:
-            print("Warning: even length chains may not be properly suppored")
+        if len(self.lemmas) % 2 != 1:
+            print("Warning: even length chains may not be properly supported")
         return self.lemmas[len(self.lemmas) // 2]
 
 
@@ -63,13 +63,15 @@ class Chain:
 class ChainBatch:
     embeddings: torch.tensor
     labels: torch.tensor
+    # Fasttext embeddings corresponding to the labels
+    label_embeddings: torch.Tensor
     subject_hot_encodings: torch.Tensor
     object_hot_encodings: torch.Tensor
     logits: Optional[torch.Tensor]
     logits_thresholded: Optional[torch.Tensor]
 
     @classmethod
-    def from_chains(cls, chains: List[Chain]):
+    def from_chains(cls, chains: List[Chain], fast_text: fasttext.FastText._FastText):
         new = cls(
             embeddings=torch.stack(
                 [torch.from_numpy(np.stack(chain.embeddings)) for chain in chains]
@@ -81,6 +83,14 @@ class ChainBatch:
                 [torch.stack(chain.object_hot_encodings) for chain in chains]
             ),
             labels=torch.tensor([chain.label for chain in chains]),
+            label_embeddings=torch.tensor(
+                np.stack(
+                    [
+                        fast_text.get_word_vector(chain.get_central_lemma())
+                        for chain in chains
+                    ]
+                )
+            ),
             logits=None,
             logits_thresholded=None,
         )
@@ -153,13 +163,14 @@ class EventWindowDataset(Dataset):
     def __init__(
         self,
         file_name: str,
+        *args,
         window_size: int = 5,
         vocabulary: List[str] = PREDICTABLE_LEMMAS,
         over_sampling: bool = False,
-        *args,
+        fast_text: Optional[fasttext.FastText._FastText] = None,
         **kwargs
     ):
-        self.ft = fasttext.load_model("cc.de.300.bin")
+        self.ft = fast_text or fasttext.load_model("cc.de.300.bin")
         in_file = open(file_name)
         self.chains = []
         self.vocabulary = vocabulary
