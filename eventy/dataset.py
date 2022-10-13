@@ -61,6 +61,7 @@ class Chain:
 
 @dataclass
 class ChainBatch:
+    # input_embeddings
     embeddings: torch.tensor
     labels: torch.tensor
     # Fasttext embeddings corresponding to the labels
@@ -69,6 +70,7 @@ class ChainBatch:
     object_hot_encodings: torch.Tensor
     logits: Optional[torch.Tensor]
     logits_thresholded: Optional[torch.Tensor]
+    new_embeddings: Optional[torch.Tensor]
 
     @classmethod
     def from_chains(cls, chains: List[Chain], fast_text: fasttext.FastText._FastText):
@@ -93,6 +95,7 @@ class ChainBatch:
             ),
             logits=None,
             logits_thresholded=None,
+            new_embeddings=None,
         )
         return new
 
@@ -176,11 +179,11 @@ class EventWindowDataset(Dataset):
         self.vocabulary = vocabulary
         self.window_size = window_size
         self.over_sampled = over_sampling
-        for line in in_file:
+        for i, line in enumerate(in_file):
             chain = [Event.from_json(e) for e in json.loads(line)]
             windows = get_windows(chain, self.window_size, vocabulary)
             for window in windows:
-                assert window[3].lemma in self.vocabulary
+                assert window[len(window) // 2].lemma in self.vocabulary
             self.chains.extend(windows)
         # remove all duplicates
         self.chains = list(set(self.chains))

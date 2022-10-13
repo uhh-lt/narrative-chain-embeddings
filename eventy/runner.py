@@ -1,15 +1,21 @@
 import dataclasses
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import List
 
 import torch
 from catalyst import dl, metrics
+from pyexpat import model
 
+from eventy.config import LossKind
 from eventy.dataset import ChainBatch
 
 
 class CustomRunner(dl.Runner):
-    def __init__(self, *args, class_distribution=None, **kwargs):
+    def __init__(
+        self, *args, losses: List[LossKind], class_distribution=None, **kwargs
+    ):
+        self.losses = losses
         self.class_distribution = class_distribution
         super().__init__(self, *args, **kwargs)
 
@@ -25,8 +31,10 @@ class CustomRunner(dl.Runner):
 
     def on_loader_start(self, runner):
         super().on_loader_start(runner)
+        self.class_distribution = self.class_distribution.to(self.engine.device)
         self.meters = {
-            key: metrics.AdditiveMetric(compute_on_call=False) for key in ["loss"]
+            key: metrics.AdditiveMetric(compute_on_call=False)
+            for key in ["loss", "embedding_loss", "classification_loss"]
         }
 
     def on_batch_start(self, runner):
@@ -56,10 +64,21 @@ class CustomRunner(dl.Runner):
         )
         self.batch.logits = model_output.logits
         self.batch.logits_thresholded = model_output.logits / self.class_distribution
-        # log metrics
-        loss = model_output.embedding_loss
-        self.batch_metrics.update({"loss": loss})
-        for key in ["loss"]:
+        self.batch.new_embeddings = model_output.embeddings
+        losses = []
+        if LossKind.CLASSIFICATION in self.losses:
+            losses.append(model_output.embedding_loss)
+        if LossKind.EMBEDDING in self.losses:
+            losses.append(model_output.classification_loss)
+        loss = torch.stack(losses).mean()
+        self.batch_metrics.update(
+            {
+                "loss": loss,
+                "embedding_loss": model_output.embedding_loss,
+                "classification_loss": model_output.classification_loss,
+            }
+        )
+        for key in ["loss", "embedding_loss", "classification_loss"]:
             self.meters[key].update(self.batch_metrics[key].item(), self.batch_size)
         # run model backward pass
         if self.is_train_loader:

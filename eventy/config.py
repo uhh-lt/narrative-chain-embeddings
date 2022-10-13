@@ -1,10 +1,25 @@
 import os
 import pathlib
 from enum import Enum
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from pydantic import BaseSettings, validator
 from pydantic_loader.yaml_config import load_yaml, save_yaml
+
+
+class DatasetConfig(BaseSettings):
+    test_split: str
+    train_split: str
+    validation_split: str
+
+
+class LossKind(str, Enum):
+    EMBEDDING = "embedding"
+    CLASSIFICATION = "classification"
+
+
+class ModelConfig(BaseSettings):
+    dropout: float
 
 
 class Config(BaseSettings):
@@ -14,6 +29,8 @@ class Config(BaseSettings):
     window_size: int
     learning_rate: float
     dataset: DatasetConfig
+    loss: List[LossKind]
+    model: ModelConfig
 
     @validator("window_size")
     def odd_window_size(cls, val):
@@ -31,9 +48,3 @@ class Config(BaseSettings):
         os.makedirs(pathlib.Path(path).parent, exist_ok=True)
         config = save_yaml(self, pathlib.Path(path))
         return config
-
-
-class DatasetConfig(BaseSettings):
-    test_split: str
-    train_split: str
-    validation_split: str

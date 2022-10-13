@@ -9,6 +9,7 @@ class EventyModel(nn.Module):
     def __init__(
         self,
         *args,
+        dropout: float,
         embedding_size: int = 300,
         num_inputs: int = 5,
         output_vocab: int = 4,
@@ -18,12 +19,16 @@ class EventyModel(nn.Module):
         **kwargs
     ):
         super().__init__(*args, **kwargs)
-        self.vocab_embeddings = vocab_embeddings
+        self.dropout_chance = dropout
+        self.vocab_embeddings = torch.nn.parameter.Parameter(
+            vocab_embeddings, requires_grad=False
+        )
         self.model_characters = model_characters
-        self.class_distribution = (
+        self.class_distribution = torch.nn.parameter.Parameter(
             class_distribution
             if class_distribution is not None
-            else torch.zeros(output_vocab, dtype=torch.float)
+            else torch.zeros(output_vocab, dtype=torch.float),
+            requires_grad=False,
         )
         self.hidden_size_1 = 1024
         self.hidden_size_2 = 1024
@@ -34,8 +39,10 @@ class EventyModel(nn.Module):
         self.char_embedding_layer = nn.Sequential(
             nn.Linear(26, 128),
             nn.Sigmoid(),
+            nn.Dropout(self.dropout_chance),
             nn.Linear(128, self.character_embeddings_size),
             nn.Sigmoid(),
+            nn.Dropout(self.dropout_chance),
         )
         self.input_layer = nn.Sequential(
             nn.Linear(
@@ -44,15 +51,20 @@ class EventyModel(nn.Module):
                 self.hidden_size_1,
             ),
             nn.Sigmoid(),
+            nn.Dropout(self.dropout_chance),
             nn.Linear(self.hidden_size_1, self.hidden_size_2),
             nn.Sigmoid(),
-            nn.Linear(self.hidden_size_2, output_vocab),
         )
-        self.loss = nn.CrossEntropyLoss(weight=1 / self.class_distribution)
+        self.output_layer = nn.Sequential(
+            nn.Linear(self.hidden_size_2, output_vocab),
+            nn.Dropout(self.dropout_chance),
+        )
+        # self.loss = nn.CrossEntropyLoss(weight=1 / self.class_distribution)
+        self.loss = nn.CrossEntropyLoss()
         embedding_loss_func = nn.CosineEmbeddingLoss(reduction="none")
         self.embedding_loss = lambda labels, *args: (
             embedding_loss_func(*args)
-            * (1 / class_distribution).index_select(0, labels).unsqueeze(0)
+            # * (1 / self.class_distribution).index_select(0, labels).unsqueeze(0)
         ).mean()
 
     def forward(
@@ -74,24 +86,27 @@ class EventyModel(nn.Module):
             with_characters = torch.cat(
                 [subject_embeddings, reshaped, object_embeddings], 1
             )
-            logits = self.input_layer(with_characters)
+            embeddings = self.input_layer(with_characters)
+            logits = self.output_layer(embeddings)
         else:
-            logits = self.input_layer(reshaped)
-        embedding_loss = self.embedding_loss(
+            embeddings = self.input_layer(reshaped)
+            logits = self.output_layer(embeddings)
+        ft_embedding_loss = self.embedding_loss(
             labels,
-            (self.vocab_embeddings * logits.unsqueeze(-1)).mean(1),
+            (self.vocab_embeddings * (logits**3).softmax(-1).unsqueeze(-1)).mean(1),
             label_embeddings,
-            torch.ones(logits.shape[0]),
+            torch.ones(logits.shape[0], device=labels.device),
         )
         loss = self.loss(logits, labels)
-        return BatchOutput(logits, loss, embedding_loss)
+        return BatchOutput(logits, loss, ft_embedding_loss, embeddings)
 
 
 @dataclass
 class BatchOutput:
     logits: torch.Tensor
-    loss: torch.Tensor
+    classification_loss: torch.Tensor
     embedding_loss: torch.Tensor
+    embeddings: torch.Tensor
 
     def __getitem__(self, item):
         return getattr(self, item)

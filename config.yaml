@@ -1,9 +1,13 @@
-batch_size: 32
+batch_size: 256
 window_size: 7
 device: "cuda"
-epochs: 3
-learning_rate: 2e-3
+epochs: 100
+learning_rate: 3e-3 # 2e-3 may be faster, 5e-3 is too much!
+model:
+  dropout: 0.5
 dataset:
-  train_split: data/train_news.json
-  test_split: data/test_news.json
-  validation_split: data/dev_news.json
+  train_split: data/train_news.jsonlines
+  test_split: data/test_news.jsonlines
+  validation_split: data/dev_news.jsonlines
+loss:
+  - embedding
