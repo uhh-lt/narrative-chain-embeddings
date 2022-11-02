@@ -1,5 +1,7 @@
 import datetime
 import os
+from pathlib import Path
+from typing import List, Optional
 
 import fasttext
 import numpy as np
@@ -7,15 +9,18 @@ import torch
 import typer
 from catalyst import dl
 from catalyst.callbacks.metrics.accuracy import AccuracyCallback
-from catalyst.callbacks.metrics.confusion_matrix import ConfusionMatrixCallback
 from torch.utils.data import DataLoader
-from torchsampler import ImbalancedDatasetSampler
 
+from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.embedding import EmbeddingVisualizerCallback
+from eventy.callbacks.multiple_choice import MultipleChoiceCallback
+from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
 from eventy.config import Config, DatasetConfig
 from eventy.dataset import ChainBatch, EventWindowDataset
 from eventy.model import EventyModel
 from eventy.runner import CustomRunner
+from eventy.sampler import DynamicImbalancedDatasetSampler
+from eventy.visualization import CustomConfusionMatrixCallback
 
 app = typer.Typer()
 
@@ -32,7 +37,7 @@ def build_vocabulary():
     vocabulary = []
     for line in open("top_lemmas.txt"):
         count, lemma = line.strip().split(" ")
-        if int(count) < 10000:
+        if int(count) < 1000:
             break
         new_lemma = lemma[1:-1]
         if new_lemma not in STOP_EVENTS:
@@ -40,93 +45,144 @@ def build_vocabulary():
     return vocabulary
 
 
-@app.command()
-def main():
-    config = Config.load_file("config.yaml")
-    run_name = str(datetime.datetime.utcnow())
-    mlflow_logger = dl.MLflowLogger(
-        experiment="simple-eventy",
-        run=run_name,
-        tracking_uri=os.environ["MLFLOW_TRACKING_URI"],
-    )
-    # vocabulary = ["rennen", "lesen", "hassen", "sehen", "stehen"]
-    vocabulary = build_vocabulary()
-    print("Random chance accuracy:", 1 / len(vocabulary))
-    ft = fasttext.load_model("cc.de.300.bin")
-    loaders = get_dataset(
-        vocabulary,
-        window_size=config.window_size,
-        ft=ft,
-        dataset_config=config.dataset,
-        batch_size=config.batch_size,
-    )
-    distribution = EventWindowDataset.get_class_distribution(loaders["train"].dataset)
-    print("Majority baseline is:", distribution.max().item())
-    model = EventyModel(
-        output_vocab=len(vocabulary),
-        num_inputs=config.window_size,
-        class_distribution=distribution,
-        vocab_embeddings=torch.tensor(
-            np.stack([ft.get_word_vector(v) for v in vocabulary])
-        ),
-        dropout=config.model.dropout,
-    )
-    model.to(config.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-    runner = CustomRunner(class_distribution=distribution, losses=config.loss)
-    logdir = f"./logs/{run_name}"
-    runner.train(
-        model=model,
-        optimizer=optimizer,
-        loaders=loaders,
-        num_epochs=config.epochs,
-        logdir=logdir,
-        hparams=config.dict(),
-        loggers={
-            "console": dl.ConsoleLogger(),
-            "mlflow": mlflow_logger,
-            "tb": dl.TensorboardLogger(logdir=logdir),
-        },
-        engine=dl.GPUEngine(config.device) if "cuda" in config.device else dl.CPUEngine,
-        callbacks=[
-            dl.EarlyStoppingCallback(
-                patience=5, metric_key="loss", minimize=True, loader_key="valid"
+class EventPredictionSystem:
+    def __init__(self, config_path="config.yaml", run_name: Optional[str] = None):
+        self.run_name = run_name or str(datetime.datetime.utcnow())
+        self.logdir = Path(f"./logs") / self.run_name
+        self.config = self.load_config(Path(config_path))
+        self.vocabulary = build_vocabulary()
+        self.ft = fasttext.load_model("cc.de.300.bin")
+        self.loaders = get_dataset(
+            self.vocabulary,
+            window_size=self.config.window_size,
+            ft=self.ft,
+            dataset_config=self.config.dataset,
+            batch_size=self.config.batch_size,
+        )
+        self.distribution = EventWindowDataset.get_class_distribution(
+            self.loaders["train"].dataset
+        )
+        self.model = self.init_model()
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.config.learning_rate
+        )
+        self.runner = CustomRunner(
+            class_distribution=self.distribution, losses=self.config.loss
+        )
+        self.mlflow_logger = dl.MLflowLogger(
+            experiment="simple-eventy",
+            run=self.run_name,
+            tracking_uri=os.environ["MLFLOW_TRACKING_URI"],
+        )
+
+    def get_baselines_results(self) -> str:
+        return (
+            f"Random chance accuracy: {1 / len(self.vocabulary)}\n"
+            f"Majority baseline is: {self.distribution.max().item()}"
+        )
+
+    def init_model(self):
+        model = EventyModel(
+            output_vocab=len(self.vocabulary),
+            num_inputs=self.config.window_size,
+            class_distribution=self.distribution,
+            vocab_embeddings=torch.tensor(
+                np.stack([self.ft.get_word_vector(v) for v in self.vocabulary])
             ),
-            EmbeddingVisualizerCallback(
-                label_key="labels",
-                embedding_key="new_embeddings",
-                collect_list=["gehen", "sterben", "feiern", "gewinnen"],
-                collection_frequency=0.05,
-                class_names=vocabulary,
-                prefix="embeddings",
-            ),
-            # this should be accessible on dl. but somehow isn't...
-            ConfusionMatrixCallback(
-                input_key="logits",
-                target_key="labels",
-                num_classes=len(vocabulary),
-                class_names=vocabulary,
-                normalize=True,
-            ),
+            dropout=self.config.model.dropout,
+        )
+        model.to(self.config.device)
+        return model
+
+    def train(self):
+        self.runner.train(
+            model=self.model,
+            optimizer=self.optimizer,
+            loaders=self.loaders,
+            num_epochs=self.config.epochs,
+            logdir=self.logdir,
+            loggers={
+                "console": dl.ConsoleLogger(),
+                "mlflow": self.mlflow_logger,
+                "tb": dl.TensorboardLogger(logdir=self.logdir),
+            },
+            engine=dl.GPUEngine(self.config.device)
+            if "cuda" in self.config.device
+            else dl.CPUEngine,
+            callbacks=[
+                ConfigCallback(
+                    config=self.config, logdir=self.logdir, save_name="config.yaml"
+                ),
+                dl.EarlyStoppingCallback(
+                    patience=5, metric_key="loss", minimize=True, loader_key="valid"
+                ),
+                EmbeddingVisualizerCallback(
+                    label_key="labels",
+                    embedding_key="new_embeddings",
+                    collect_list=["gehen", "sterben", "feiern", "gewinnen"],
+                    collection_frequency=0.1,
+                    class_names=self.vocabulary,
+                    prefix="embeddings",
+                    loader_keys="valid",
+                ),
+                MultipleChoiceCallback(
+                    n_choices=5,
+                    input_key="logits",
+                    target_key="labels",
+                    distribution=self.distribution.to(self.config.device),
+                ),
+                SilhouetteScoreCallback(
+                    input_key="new_embeddings",
+                    target_key="labels",
+                    sample_size=1000,
+                ),
+                # this should be accessible on dl. but somehow isn't...
+                CustomConfusionMatrixCallback(
+                    input_key="logits",
+                    target_key="labels",
+                    num_classes=len(self.vocabulary),
+                    class_names=self.vocabulary,
+                    normalize=True,
+                    show_numbers=False,
+                ),
+                *self.build_accuracy_callbacks(),
+            ],
+            valid_loader="valid",
+            valid_metric="loss",
+            minimize_valid_metric=True,
+            verbose=True,
+        )
+
+    def build_accuracy_callbacks(self):
+        return [
             AccuracyCallback(
                 input_key="logits_thresholded",
                 target_key="labels",
-                num_classes=len(vocabulary),
+                num_classes=len(self.vocabulary),
                 topk=(1, 3, 10),
             ),
             AccuracyCallback(
                 input_key="logits",
                 target_key="labels",
-                num_classes=len(vocabulary),
+                num_classes=len(self.vocabulary),
                 topk=(1, 3, 10),
                 prefix="raw_",
             ),
-        ],
-        valid_loader="valid",
-        valid_metric="loss",
-        minimize_valid_metric=True,
-        verbose=True,
-    )
+        ]
+
+    def load_config(self, config_path: Path):
+        config = Config.load_file(config_path)
+        return config
+
+    def save_config(self):
+        pass
+
+
+@app.command()
+def main():
+    prediciton_system = EventPredictionSystem()
+    print(prediciton_system.get_baselines_results())
+    prediciton_system.train()
 
 
 def get_dataset(vocabulary, window_size, ft, dataset_config: DatasetConfig, batch_size):
@@ -146,10 +202,13 @@ def get_dataset(vocabulary, window_size, ft, dataset_config: DatasetConfig, batc
     )
     print("Labels", dataset_train.get_label_counts())
     print("Labels relative", dataset_train.get_label_distribution())
-    sampler = ImbalancedDatasetSampler(
+    sampler = DynamicImbalancedDatasetSampler(
         dataset_train,
         labels=[item.lemmas[dataset_train.window_size // 2] for item in dataset_train],
+        num_steps=100,
+        sampling_schedule=dataset_config.sampling_schedule,
     )
+    # sampler = BalanceBatchSampler([item.lemmas[dataset_train.window_size // 2] for item in dataset_train], 23, 2500)
     loader_train = DataLoader(
         dataset_train,
         collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
