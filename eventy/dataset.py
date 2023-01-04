@@ -173,7 +173,7 @@ class EventWindowDataset(Dataset):
         fast_text: Optional[fasttext.FastText._FastText] = None,
         **kwargs
     ):
-        self.ft = fast_text or fasttext.load_model("cc.de.300.bin")
+        self.ft = fast_text
         in_file = open(file_name)
         self.chains = []
         self.vocabulary = vocabulary

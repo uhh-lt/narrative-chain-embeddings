@@ -11,6 +11,7 @@ from catalyst import dl
 from catalyst.callbacks.metrics.accuracy import AccuracyCallback
 from torch.utils.data import DataLoader
 
+from eventy.bpemb import BPEmb
 from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.embedding import EmbeddingVisualizerCallback
 from eventy.callbacks.multiple_choice import MultipleChoiceCallback
@@ -51,7 +52,7 @@ class EventPredictionSystem:
         self.logdir = Path(f"./logs") / self.run_name
         self.config = self.load_config(Path(config_path))
         self.vocabulary = build_vocabulary()
-        self.ft = fasttext.load_model("cc.de.300.bin")
+        self.ft = fasttext.load_model(self.config.embedding_source.name)
         self.loaders = get_dataset(
             self.vocabulary,
             window_size=self.config.window_size,
@@ -74,6 +75,7 @@ class EventPredictionSystem:
             run=self.run_name,
             tracking_uri=os.environ["MLFLOW_TRACKING_URI"],
         )
+        self.wandb_logger = dl.WandbLogger("simple-event-predict", entity="hatzel")
 
     def get_baselines_results(self) -> str:
         return (
@@ -101,9 +103,16 @@ class EventPredictionSystem:
             loaders=self.loaders,
             num_epochs=self.config.epochs,
             logdir=self.logdir,
+            scheduler=torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizer,
+                epochs=self.config.epochs,
+                steps_per_epoch=len(self.loaders["train"]),
+                max_lr=self.config.learning_rate,
+            ),
             loggers={
                 "console": dl.ConsoleLogger(),
                 "mlflow": self.mlflow_logger,
+                "wandb": self.wandb_logger,
                 "tb": dl.TensorboardLogger(logdir=self.logdir),
             },
             engine=dl.GPUEngine(self.config.device)
@@ -136,7 +145,6 @@ class EventPredictionSystem:
                     target_key="labels",
                     sample_size=1000,
                 ),
-                # this should be accessible on dl. but somehow isn't...
                 CustomConfusionMatrixCallback(
                     input_key="logits",
                     target_key="labels",
@@ -167,6 +175,13 @@ class EventPredictionSystem:
                 num_classes=len(self.vocabulary),
                 topk=(1, 3, 10),
                 prefix="raw_",
+            ),
+            AccuracyCallback(
+                input_key="cosine_similarities",
+                target_key="labels",
+                num_classes=len(self.vocabulary),
+                topk=(1, 3, 10),
+                prefix="cosine_",
             ),
         ]
 

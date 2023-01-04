@@ -1,11 +1,10 @@
 import dataclasses
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List
 
 import torch
 from catalyst import dl, metrics
-from pyexpat import model
 
 from eventy.config import LossKind
 from eventy.dataset import ChainBatch
@@ -63,6 +62,7 @@ class CustomRunner(dl.Runner):
             on_device_batch.label_embeddings,
         )
         self.batch.logits = model_output.logits
+        self.batch.cosine_similarities = model_output.cosine_similarities
         self.batch.logits_thresholded = model_output.logits / self.class_distribution
         self.batch.new_embeddings = model_output.embeddings
         losses = []

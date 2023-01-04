@@ -4,6 +4,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from .util import cosine_similarity
+
 
 class EventyModel(nn.Module):
     def __init__(
@@ -91,19 +93,24 @@ class EventyModel(nn.Module):
         else:
             embeddings = self.input_layer(reshaped)
             logits = self.output_layer(embeddings)
+        embedding_mixes = (
+            self.vocab_embeddings * (logits**2).softmax(-1).unsqueeze(-1)
+        ).mean(1)
         ft_embedding_loss = self.embedding_loss(
             labels,
-            (self.vocab_embeddings * (logits**3).softmax(-1).unsqueeze(-1)).mean(1),
+            embedding_mixes,
             label_embeddings,
             torch.ones(logits.shape[0], device=labels.device),
         )
         loss = self.loss(logits, labels)
-        return BatchOutput(logits, loss, ft_embedding_loss, embeddings)
+        similarities = 1 - cosine_similarity(embedding_mixes, self.vocab_embeddings)
+        return BatchOutput(logits, similarities, loss, ft_embedding_loss, embeddings)
 
 
 @dataclass
 class BatchOutput:
     logits: torch.Tensor
+    cosine_similarities: torch.Tensor
     classification_loss: torch.Tensor
     embedding_loss: torch.Tensor
     embeddings: torch.Tensor

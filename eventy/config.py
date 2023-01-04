@@ -16,6 +16,15 @@ class SamplingSchedule(str, Enum):
     BALANCED_TO_REAL = "balanced_to_real"
 
 
+class EmbeddingSourceKind(str, Enum):
+    FASTTEXT = "fasttext"
+
+
+class EmbeddingSource(BaseSettings):
+    kind: EmbeddingSourceKind
+    name: str
+
+
 class DatasetConfig(BaseSettings):
     test_split: str
     train_split: str
@@ -50,6 +59,7 @@ class Config(BaseSettings, LoadableConfig):
     dataset: DatasetConfig
     loss: List[LossKind]
     model: ModelConfig
+    embedding_source: EmbeddingSource
 
     @validator("window_size")
     def odd_window_size(cls, val):
