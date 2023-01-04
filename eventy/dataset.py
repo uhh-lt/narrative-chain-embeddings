@@ -148,10 +148,18 @@ def _get_windows(events: List[List[Event]], window_size: int, vocabulary: List[s
     return windows, new_sublists
 
 
+def str_to_int(in_str):
+    out = 0
+    for i, c in enumerate(reversed(in_str), start=1):
+        out += (ord(c) - ord("A")) * 26**i
+    return out
+
+
 def character_list_to_hot_encoding(input_list: List[str]) -> torch.Tensor:
     encoding = torch.zeros(26)
     for c in input_list:
-        encoding[ord(c) - ord("A")] = 1
+        if c != "_":
+            encoding[str_to_int(c) % 26] = 1
     return encoding
 
 
