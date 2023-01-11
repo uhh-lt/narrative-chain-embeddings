@@ -26,6 +26,8 @@ class CustomRunner(dl.Runner):
             on_device_batch.subject_hot_encodings,
             on_device_batch.object_hot_encodings,
             on_device_batch.labels,
+            on_device_batch.object_embeddings,
+            on_device_batch.subject_embeddings,
         )
 
     def on_loader_start(self, runner):
@@ -60,6 +62,8 @@ class CustomRunner(dl.Runner):
             on_device_batch.object_hot_encodings,
             on_device_batch.labels,
             on_device_batch.label_embeddings,
+            on_device_batch.object_embeddings,
+            on_device_batch.subject_embeddings,
         )
         self.batch.logits = model_output.logits
         self.batch.cosine_similarities = model_output.cosine_similarities

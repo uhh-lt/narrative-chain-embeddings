@@ -18,6 +18,8 @@ class Event:
     lemma: str
     objects: List[str]
     subjects: List[str]
+    object_names: List[str]
+    subject_names: List[str]
 
     @classmethod
     def from_json(cls, data: Dict) -> "Event":
@@ -25,6 +27,8 @@ class Event:
             lemma=data["verb_lemma"],
             objects=data["objects"],
             subjects=data["subjects"],
+            subject_names=data.get("subject_names", []),
+            object_names=data.get("object_names", []),
         )
 
     def __hash__(self):
@@ -38,6 +42,10 @@ class Chain:
     label: int
     subject_hot_encodings: List[torch.Tensor]
     object_hot_encodings: List[torch.Tensor]
+    subject_names: List[str]
+    object_names: List[str]
+    subject_embeddings: List[np.array]
+    object_embeddings: List[np.array]
 
     def __init__(
         self,
@@ -46,11 +54,19 @@ class Chain:
         vocabulary,
         subject_hot_encodings,
         object_hot_encodings,
+        subject_names,
+        object_names,
+        subject_embeddings,
+        object_embeddings,
     ):
         self.subject_hot_encodings = subject_hot_encodings
         self.object_hot_encodings = object_hot_encodings
         self.lemmas = lemmas
         self.embeddings = embeddings
+        self.subject_names = subject_names
+        self.object_names = object_names
+        self.subject_embeddings = subject_embeddings
+        self.object_embeddings = object_embeddings
         self.label = vocabulary.index(self.lemmas[len(self.lemmas) // 2])
 
     def get_central_lemma(self) -> str:
@@ -68,6 +84,8 @@ class ChainBatch:
     label_embeddings: torch.Tensor
     subject_hot_encodings: torch.Tensor
     object_hot_encodings: torch.Tensor
+    subject_embeddings: torch.Tensor
+    object_embeddings: torch.Tensor
     logits: Optional[torch.Tensor]
     logits_thresholded: Optional[torch.Tensor]
     new_embeddings: Optional[torch.Tensor]
@@ -92,6 +110,18 @@ class ChainBatch:
                         for chain in chains
                     ]
                 )
+            ),
+            subject_embeddings=torch.stack(
+                [
+                    torch.from_numpy(np.stack(chain.subject_embeddings))
+                    for chain in chains
+                ]
+            ),
+            object_embeddings=torch.stack(
+                [
+                    torch.from_numpy(np.stack(chain.object_embeddings))
+                    for chain in chains
+                ]
             ),
             logits=None,
             logits_thresholded=None,
@@ -178,8 +208,10 @@ class EventWindowDataset(Dataset):
         window_size: int = 5,
         vocabulary: List[str] = PREDICTABLE_LEMMAS,
         over_sampling: bool = False,
+        edge_markers: bool = False,
         fast_text: Optional[fasttext.FastText._FastText] = None,
-        **kwargs
+        size_limit: Optional[int] = None,
+        **kwargs,
     ):
         self.ft = fast_text
         in_file = open(file_name)
@@ -189,16 +221,22 @@ class EventWindowDataset(Dataset):
         self.over_sampled = over_sampling
         for i, line in enumerate(in_file):
             chain = [Event.from_json(e) for e in json.loads(line)]
+            if edge_markers:
+                chain = EventWindowDataset.add_edge_markers(
+                    chain, self.window_size // 2
+                )
             windows = get_windows(chain, self.window_size, vocabulary)
             for window in windows:
                 assert window[len(window) // 2].lemma in self.vocabulary
             self.chains.extend(windows)
+            if size_limit and size_limit <= i:
+                break
         # remove all duplicates
         self.chains = list(set(self.chains))
         if self.over_sampled:
             lemma_counter = Counter()
             for chain in self.chains:
-                lemma_counter.update([chain[window_size // 2].lemma])
+                lemma_counter.update([chain.get_central_lemma()])
             _least_lemma, least_common_count = list(lemma_counter.most_common())[-1]
             _, most_common_count = list(lemma_counter.most_common())[0]
             num_duplicates_per_item = {
@@ -224,6 +262,14 @@ class EventWindowDataset(Dataset):
             random.shuffle(balanced_chains)
             self.chains = balanced_chains
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def add_edge_markers(chain: List[Event], length):
+        return (
+            [Event(f"<begin{n}>", [], [], [], []) for n in range(length)]
+            + chain
+            + [Event(f"<end{n}>", [], [], [], []) for n in range(length)]
+        )
 
     @staticmethod
     def get_class_distribution(instance):
@@ -258,6 +304,32 @@ class EventWindowDataset(Dataset):
                 character_list_to_hot_encoding(event.objects) for event in chain
             ],
             vocabulary=self.vocabulary,
+            subject_names=[c.subject_names for c in chain],
+            object_names=[c.object_names for c in chain],
+            subject_embeddings=[
+                torch.mean(
+                    torch.stack(
+                        [self.ft.get_word_vector(subj) for subj in event.subject_names]
+                        or [torch.zeros(300)]
+                    ),
+                    0,
+                )
+                if i != to_mask_index
+                else np.zeros(300, dtype=np.float32)
+                for i, event in enumerate(chain)
+            ],
+            object_embeddings=[
+                torch.mean(
+                    torch.stack(
+                        [self.ft.get_word_vector(subj) for subj in event.subject_names]
+                        or [torch.zeros(300)]
+                    ),
+                    0,
+                )
+                if i != to_mask_index
+                else np.zeros(300, dtype=np.float32)
+                for i, event in enumerate(chain)
+            ],
         )
 
     def get_label_counts(self):

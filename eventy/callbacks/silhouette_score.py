@@ -27,7 +27,7 @@ class SilhouetteMetric(ICallbackLoaderMetric):
         self.labels = []
 
     def update(self, embeddings: torch.Tensor, targets: torch.Tensor) -> None:
-        self.embeddings.append(embeddings)
+        self.embeddings.append(embeddings.detach().cpu())
         self.labels.append(targets)
 
     def compute(self) -> float:

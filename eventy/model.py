@@ -17,6 +17,7 @@ class EventyModel(nn.Module):
         output_vocab: int = 4,
         vocab_embeddings: Optional[torch.Tensor] = None,
         model_characters: bool = True,
+        model_character_names: bool = True,
         class_distribution: Optional[torch.Tensor] = None,
         **kwargs
     ):
@@ -26,12 +27,14 @@ class EventyModel(nn.Module):
             vocab_embeddings, requires_grad=False
         )
         self.model_characters = model_characters
+        self.model_character_names = model_character_names
         self.class_distribution = torch.nn.parameter.Parameter(
             class_distribution
             if class_distribution is not None
             else torch.zeros(output_vocab, dtype=torch.float),
             requires_grad=False,
         )
+        self.embedding_size = embedding_size
         self.hidden_size_1 = 1024
         self.hidden_size_2 = 1024
         self.num_inputs = num_inputs
@@ -49,7 +52,10 @@ class EventyModel(nn.Module):
         self.input_layer = nn.Sequential(
             nn.Linear(
                 embedding_size * num_inputs
-                + self.character_embeddings_size * num_inputs * 2,
+                + self.character_embeddings_size * num_inputs * 2
+                + (
+                    self.embedding_size * num_inputs * 2 if model_character_names else 0
+                ),
                 self.hidden_size_1,
             ),
             nn.Sigmoid(),
@@ -76,6 +82,8 @@ class EventyModel(nn.Module):
         object_hot_encodings: torch.Tensor,
         labels: torch.Tensor,
         label_embeddings: torch.Tensor,
+        object_text_embeddings: torch.Tensor,
+        subject_text_embeddings: torch.Tensor,
     ):
         reshaped = embeddings.reshape(-1, self.chain_input_size)
         if self.model_characters:
@@ -85,6 +93,25 @@ class EventyModel(nn.Module):
             object_embeddings = self.char_embedding_layer(object_hot_encodings).reshape(
                 -1, self.character_embeddings_size * self.num_inputs
             )
+            if self.model_character_names:
+                object_embeddings = torch.cat(
+                    [
+                        object_text_embeddings.reshape(
+                            -1, self.embedding_size * self.num_inputs
+                        ),
+                        object_embeddings,
+                    ],
+                    1,
+                )
+                subject_embeddings = torch.cat(
+                    [
+                        subject_text_embeddings.reshape(
+                            -1, self.embedding_size * self.num_inputs
+                        ),
+                        subject_embeddings,
+                    ],
+                    1,
+                )
             with_characters = torch.cat(
                 [subject_embeddings, reshaped, object_embeddings], 1
             )

@@ -1,5 +1,6 @@
 import datetime
-import os
+import json
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional
 
@@ -9,6 +10,7 @@ import torch
 import typer
 from catalyst import dl
 from catalyst.callbacks.metrics.accuracy import AccuracyCallback
+from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 
 from eventy.bpemb import BPEmb
@@ -16,7 +18,7 @@ from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.embedding import EmbeddingVisualizerCallback
 from eventy.callbacks.multiple_choice import MultipleChoiceCallback
 from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
-from eventy.config import Config, DatasetConfig
+from eventy.config import Config, DatasetConfig, EmbeddingSourceKind
 from eventy.dataset import ChainBatch, EventWindowDataset
 from eventy.model import EventyModel
 from eventy.runner import CustomRunner
@@ -26,17 +28,26 @@ from eventy.visualization import CustomConfusionMatrixCallback
 app = typer.Typer()
 
 
-STOP_EVENTS = ["sagen", "haben", "kommen"]
+STOP_EVENTS = [
+    "sagen",
+    "haben",
+    "kommen",
+    "have",
+    "be",
+    "make",
+    "get",
+    "take",
+    "know",
+    "give",
+    "tell",
+    "see",
+    "go",
+]
 
 
-@app.command()
-def test():
-    pass
-
-
-def build_vocabulary():
+def build_vocabulary(vocabulary_file):
     vocabulary = []
-    for line in open("top_lemmas.txt"):
+    for line in open(vocabulary_file):
         count, lemma = line.strip().split(" ")
         if int(count) < 1000:
             break
@@ -47,18 +58,27 @@ def build_vocabulary():
 
 
 class EventPredictionSystem:
-    def __init__(self, config_path="config.yaml", run_name: Optional[str] = None):
+    def __init__(
+        self,
+        config_path="config.yaml",
+        run_name: Optional[str] = None,
+        quick_run: bool = False,
+        splits: List[str] = ["train", "validation"],
+        log: bool = True,
+    ):
         self.run_name = run_name or str(datetime.datetime.utcnow())
         self.logdir = Path(f"./logs") / self.run_name
-        self.config = self.load_config(Path(config_path))
-        self.vocabulary = build_vocabulary()
-        self.ft = fasttext.load_model(self.config.embedding_source.name)
+        self.config = EventPredictionSystem.load_config(Path(config_path))
+        self.ft = self.get_embedder()
+        self.vocabulary = build_vocabulary(self.config.dataset.vocabulary_file)
         self.loaders = get_dataset(
             self.vocabulary,
             window_size=self.config.window_size,
             ft=self.ft,
             dataset_config=self.config.dataset,
             batch_size=self.config.batch_size,
+            size_limit=10000 if quick_run else None,
+            splits=splits,
         )
         self.distribution = EventWindowDataset.get_class_distribution(
             self.loaders["train"].dataset
@@ -70,18 +90,25 @@ class EventPredictionSystem:
         self.runner = CustomRunner(
             class_distribution=self.distribution, losses=self.config.loss
         )
-        self.mlflow_logger = dl.MLflowLogger(
-            experiment="simple-eventy",
-            run=self.run_name,
-            tracking_uri=os.environ["MLFLOW_TRACKING_URI"],
-        )
-        self.wandb_logger = dl.WandbLogger("simple-event-predict", entity="hatzel")
+        if log:
+            self.wandb_logger = dl.WandbLogger("simple-event-predict", entity="hatzel")
+            self.wandb_logger.log_hparams(self.config.to_one_level_dict())
 
     def get_baselines_results(self) -> str:
         return (
             f"Random chance accuracy: {1 / len(self.vocabulary)}\n"
             f"Majority baseline is: {self.distribution.max().item()}"
         )
+
+    def get_embedder(self):
+        if self.config.embedding_source.kind == EmbeddingSourceKind.FASTTEXT:
+            return fasttext.load_model(self.config.embedding_source.name)
+        elif self.config.embedding_source.kind == EmbeddingSourceKind.BPEMB:
+            return BPEmb()
+        else:
+            raise ValueError(
+                "Unkown Embedding source", self.config.embedding_source.kind
+            )
 
     def init_model(self):
         model = EventyModel(
@@ -111,9 +138,7 @@ class EventPredictionSystem:
             ),
             loggers={
                 "console": dl.ConsoleLogger(),
-                "mlflow": self.mlflow_logger,
                 "wandb": self.wandb_logger,
-                "tb": dl.TensorboardLogger(logdir=self.logdir),
             },
             engine=dl.GPUEngine(self.config.device)
             if "cuda" in self.config.device
@@ -123,16 +148,21 @@ class EventPredictionSystem:
                     config=self.config, logdir=self.logdir, save_name="config.yaml"
                 ),
                 dl.EarlyStoppingCallback(
-                    patience=5, metric_key="loss", minimize=True, loader_key="valid"
+                    patience=5,
+                    metric_key="loss",
+                    minimize=True,
+                    loader_key="validation",
                 ),
                 EmbeddingVisualizerCallback(
                     label_key="labels",
                     embedding_key="new_embeddings",
-                    collect_list=["gehen", "sterben", "feiern", "gewinnen"],
+                    collect_list=["die", "walk", "celebrate", "win"]
+                    if "en" in self.config.dataset.vocabulary_file
+                    else ["lesen", "gehen", "essen", "fahren"],
                     collection_frequency=0.1,
                     class_names=self.vocabulary,
                     prefix="embeddings",
-                    loader_keys="valid",
+                    loader_keys="validation",
                 ),
                 MultipleChoiceCallback(
                     n_choices=5,
@@ -155,10 +185,25 @@ class EventPredictionSystem:
                 ),
                 *self.build_accuracy_callbacks(),
             ],
-            valid_loader="valid",
+            valid_loader="validation",
             valid_metric="loss",
             minimize_valid_metric=True,
             verbose=True,
+        )
+
+    def test(self):
+        self.runner.evaluate_loader(
+            loader=self.loaders["validation"],
+            model=self.model,
+            callbacks=[
+                MultipleChoiceCallback(
+                    n_choices=5,
+                    input_key="logits",
+                    target_key="labels",
+                    distribution=self.distribution.to(self.config.device),
+                ),
+                *self.build_accuracy_callbacks(),
+            ],
         )
 
     def build_accuracy_callbacks(self):
@@ -185,7 +230,8 @@ class EventPredictionSystem:
             ),
         ]
 
-    def load_config(self, config_path: Path):
+    @staticmethod
+    def load_config(config_path: Path):
         config = Config.load_file(config_path)
         return config
 
@@ -194,60 +240,81 @@ class EventPredictionSystem:
 
 
 @app.command()
-def main():
-    prediciton_system = EventPredictionSystem()
+def train(quick_run: bool = False):
+    prediciton_system = EventPredictionSystem(quick_run=quick_run)
     print(prediciton_system.get_baselines_results())
     prediciton_system.train()
 
 
-def get_dataset(vocabulary, window_size, ft, dataset_config: DatasetConfig, batch_size):
-    dataset_train = EventWindowDataset(
-        dataset_config.train_split,
-        vocabulary=vocabulary,
-        window_size=window_size,
-        over_sampling=False,
-        fast_text=ft,
+@app.command()
+def test(run_name: str, test_set: bool = False):
+    prediciton_system = EventPredictionSystem(
+        config_path=Path("logs") / run_name / "config.yaml",
+        quick_run=True,
+        splits=(["test"] if test_set else ["validation"]) + ["train"],
+        log=False,
     )
-    dataset_dev = EventWindowDataset(
-        dataset_config.validation_split,
-        vocabulary=vocabulary,
-        window_size=window_size,
-        over_sampling=False,
-        fast_text=ft,
-    )
-    print("Labels", dataset_train.get_label_counts())
-    print("Labels relative", dataset_train.get_label_distribution())
-    sampler = DynamicImbalancedDatasetSampler(
-        dataset_train,
-        labels=[item.lemmas[dataset_train.window_size // 2] for item in dataset_train],
-        num_steps=100,
-        sampling_schedule=dataset_config.sampling_schedule,
-    )
-    # sampler = BalanceBatchSampler([item.lemmas[dataset_train.window_size // 2] for item in dataset_train], 23, 2500)
-    loader_train = DataLoader(
-        dataset_train,
-        collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
-        batch_size=batch_size,
-        sampler=sampler,
-    )
-    loader_dev = DataLoader(
-        dataset_dev,
-        collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
-        batch_size=batch_size,
-        shuffle=True,
-    )
-    return {
-        "train": loader_train,
-        "valid": loader_dev,
-    }
-
-
-# model training
+    state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
+    prediciton_system.model.load_state_dict(state_dict)
+    prediciton_system.test()
+    # TODO: we need to load the model and the test set here + optionally the dev set instead (actually dev should be default)
 
 
 @app.command()
-def train():
-    pass
+def get_stats(config_path: str = "config.yaml"):
+    config = EventPredictionSystem.load_config(Path(config_path))
+    counter = Counter()
+    total_length = 0
+    num_chains = 0
+    for line in open(config.dataset.train_split):
+        data = json.loads(line)
+        counter.update([len(data)])
+        total_length += len(data)
+        num_chains += 1
+    plt.bar(range(10), [counter.get(x, 0) for x in range(10)])
+    plt.savefig("chain_lengths.pdf")
+    print(f"Total number of chains: {num_chains}")
+    print(f"Mean chain length: {total_length / num_chains:.2f}")
+
+
+def get_dataset(
+    vocabulary,
+    window_size,
+    ft,
+    dataset_config: DatasetConfig,
+    batch_size,
+    size_limit: Optional[int] = None,
+    splits: List[str] = ["train", "validation"],
+):
+    loaders = {}
+    for split in splits:
+        dataset = EventWindowDataset(
+            getattr(dataset_config, split + "_split"),
+            vocabulary=vocabulary,
+            window_size=window_size,
+            over_sampling=False,
+            edge_markers=dataset_config.edge_markers,
+            fast_text=ft,
+            size_limit=size_limit,
+        )
+        if split == "train":
+            print("Labels", dataset.get_label_counts())
+            print("Labels relative", dataset.get_label_distribution())
+        sampler = None
+        if split == "train":
+            sampler = DynamicImbalancedDatasetSampler(
+                dataset,
+                labels=[item.lemmas[dataset.window_size // 2] for item in dataset],
+                num_steps=100,
+                sampling_schedule=dataset_config.sampling_schedule,
+            )
+        loaders[split] = DataLoader(
+            dataset,
+            collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
+            batch_size=batch_size,
+            sampler=sampler,
+        )
+    return loaders
 
 
 if __name__ == "__main__":

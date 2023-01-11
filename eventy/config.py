@@ -18,6 +18,7 @@ class SamplingSchedule(str, Enum):
 
 class EmbeddingSourceKind(str, Enum):
     FASTTEXT = "fasttext"
+    BPEMB = "bpemb"
 
 
 class EmbeddingSource(BaseSettings):
@@ -29,7 +30,9 @@ class DatasetConfig(BaseSettings):
     test_split: str
     train_split: str
     validation_split: str
+    edge_markers: bool
     sampling_schedule: SamplingSchedule
+    vocabulary_file: str
 
 
 class LossKind(str, Enum):
@@ -77,3 +80,24 @@ class Config(BaseSettings, LoadableConfig):
         os.makedirs(pathlib.Path(path).parent, exist_ok=True)
         config = save_yaml(self, pathlib.Path(path))
         return config
+
+    def to_one_level_dict(self):
+        data = dict(self)
+
+        def unnested(data_in, prefix=""):
+            out = {prefix + k: v for k, v in data_in.items() if not isinstance(v, dict)}
+            update = [
+                unnested(value, prefix=key + ".")
+                for key, value in data_in.items()
+                if isinstance(value, dict)
+            ]
+            for up in update:
+                while len(set(up.keys()) & set(out.keys())) > 0:
+                    up = {
+                        "__duplicate__" + k if k in out.keys() else k: v
+                        for k, v in up.items()
+                    }
+                out.update(up)
+            return out
+
+        return unnested(data)
