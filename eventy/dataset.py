@@ -1,7 +1,7 @@
 import dataclasses
 import json
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -345,3 +345,54 @@ class EventWindowDataset(Dataset):
 
     def __len__(self):
         return len(self.chains)
+
+
+class SimilarityDataset(EventWindowDataset):
+    """ """
+
+    def __init__(
+        self,
+        file_name: str,
+        *args,
+        window_size: int = 5,
+        vocabulary: List[str] = PREDICTABLE_LEMMAS,
+        over_sampling: bool = False,
+        edge_markers: bool = False,
+        fast_text: Optional[fasttext.FastText._FastText] = None,
+        **kwargs,
+    ):
+        self.ft = fast_text
+        in_file = open(file_name)
+        self.chains = []
+        self.vocabulary = vocabulary
+        self.window_size = window_size
+        self.over_sampled = over_sampling
+        self.similarities = {}
+        self.doc_ids = []
+        self.doc_id_positions = {}
+        for i, line in enumerate(in_file):
+            data = json.loads(line)
+            local_doc_ids = [data["doc_id_1"], data["doc_id_2"]]
+            for chains_data, doc_id in zip(
+                [data["chains_1"], data["chains_2"]], local_doc_ids
+            ):
+                for chain_data in chains_data:
+                    chain = [Event.from_json(e) for e in chain_data]
+                    if edge_markers:
+                        chain = EventWindowDataset.add_edge_markers(
+                            chain, self.window_size // 2
+                        )
+                    windows = get_windows(chain, self.window_size, vocabulary)
+                    for window in windows:
+                        assert window[len(window) // 2].lemma in self.vocabulary
+                    self.chains.extend(windows)
+                    self.doc_id_positions[doc_id] = list(
+                        range(len(self.doc_ids), len(self.chains))
+                    )
+                    self.doc_ids.extend([doc_id] * len(windows))
+                    self.similarities[tuple(local_doc_ids)] = data["similarities"]
+        # remove all duplicates
+        self.chains = list(set(self.chains))
+
+    def __getitem__(self, n):
+        return super().__getitem__(n), self.doc_ids[n]

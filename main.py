@@ -1,6 +1,7 @@
 import datetime
+import itertools
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import List, Optional
 
@@ -13,13 +14,14 @@ from catalyst.callbacks.metrics.accuracy import AccuracyCallback
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 
+import eventy
 from eventy.bpemb import BPEmb
 from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.embedding import EmbeddingVisualizerCallback
 from eventy.callbacks.multiple_choice import MultipleChoiceCallback
 from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
 from eventy.config import Config, DatasetConfig, EmbeddingSourceKind
-from eventy.dataset import ChainBatch, EventWindowDataset
+from eventy.dataset import ChainBatch, EventWindowDataset, SimilarityDataset
 from eventy.model import EventyModel
 from eventy.runner import CustomRunner
 from eventy.sampler import DynamicImbalancedDatasetSampler
@@ -65,10 +67,13 @@ class EventPredictionSystem:
         quick_run: bool = False,
         splits: List[str] = ["train", "validation"],
         log: bool = True,
+        device_override: Optional[str] = None,
     ):
         self.run_name = run_name or str(datetime.datetime.utcnow())
         self.logdir = Path(f"./logs") / self.run_name
         self.config = EventPredictionSystem.load_config(Path(config_path))
+        if device_override is not None:
+            self.config.device = device_override
         self.ft = self.get_embedder()
         self.vocabulary = build_vocabulary(self.config.dataset.vocabulary_file)
         self.loaders = get_dataset(
@@ -80,9 +85,15 @@ class EventPredictionSystem:
             size_limit=10000 if quick_run else None,
             splits=splits,
         )
-        self.distribution = EventWindowDataset.get_class_distribution(
-            self.loaders["train"].dataset
-        )
+        try:
+            self.distribution = EventWindowDataset.get_class_distribution(
+                self.loaders["train"].dataset
+            )
+        except KeyError:
+            print(
+                "Warning: no label distribution, regular evaluation will fail (fine if you are doing similarity evaluation)!"
+            )
+            self.distribution = torch.zeros(100)
         self.model = self.init_model()
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.config.learning_rate
@@ -244,6 +255,68 @@ def train(quick_run: bool = False):
     prediciton_system = EventPredictionSystem(quick_run=quick_run)
     print(prediciton_system.get_baselines_results())
     prediciton_system.train()
+
+
+@app.command()
+def similarity(
+    run_name: str,
+    quick_run: bool = False,
+    batch_size: int = 256,
+    device: str = "cuda:0",
+):
+    prediciton_system = EventPredictionSystem(
+        config_path=Path("logs") / run_name / "config.yaml",
+        quick_run=False,
+        splits=[],
+        log=False,
+        device_override=device,
+    )
+    dataset = SimilarityDataset(
+        "data/similarity_chains_de.jsonlines",
+        fast_text=prediciton_system.ft,
+        window_size=prediciton_system.config.window_size,
+    )
+    loader = DataLoader(
+        dataset,
+        collate_fn=lambda chain_and_ids: (
+            ChainBatch.from_chains(list(zip(*chain_and_ids))[0], prediciton_system.ft),
+            list(zip(*chain_and_ids))[1],
+        ),
+        batch_size=batch_size,
+    )
+    embeddings = defaultdict(list)
+    for batch, ids in loader:
+        prediciton_system.model.eval()
+        on_device_batch: ChainBatch = batch.to(device)
+        model_output = prediciton_system.model(
+            on_device_batch.embeddings,
+            on_device_batch.subject_hot_encodings,
+            on_device_batch.object_hot_encodings,
+            on_device_batch.labels,
+            on_device_batch.label_embeddings,
+            on_device_batch.object_embeddings,
+            on_device_batch.subject_embeddings,
+        )
+        for doc_id, embedding in zip(ids, model_output.embeddings):
+            embeddings[doc_id].append(embedding)
+    predicted_sims = []
+    all_similarities = defaultdict(list)
+    for (doc_a, doc_b), similarities in dataset.similarities.items():
+        if len(embeddings[doc_a]) == 0 or len(embeddings[doc_b]) == 0:
+            print("skipping")
+            continue
+        doc_a_embeddings = torch.stack(embeddings[doc_a])
+        doc_b_embeddings = torch.stack(embeddings[doc_b])
+        sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
+        predicted_sims.append(sims.max(0).values.mean() + sims.max(1).values.mean())
+        for k, v in similarities.items():
+            all_similarities[k].append(v)
+
+    for dimension, sim_list in all_similarities.items():
+        corr = torch.corrcoef(
+            torch.stack([torch.tensor(sim_list), torch.tensor(predicted_sims)])
+        )
+        print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
 
 
 @app.command()

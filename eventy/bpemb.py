@@ -14,5 +14,4 @@ class BPEmb:
         )
 
     def get_word_vector(self, word):
-        print(word)
         return self.inner.vectors[self.inner.encode_ids(word)].mean(0)
