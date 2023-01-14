@@ -19,6 +19,7 @@ class SamplingSchedule(str, Enum):
 class EmbeddingSourceKind(str, Enum):
     FASTTEXT = "fasttext"
     BPEMB = "bpemb"
+    MUSE = "muse"
 
 
 class EmbeddingSource(BaseSettings):

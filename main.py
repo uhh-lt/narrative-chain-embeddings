@@ -3,7 +3,7 @@ import itertools
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import fasttext
 import numpy as np
@@ -23,6 +23,7 @@ from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
 from eventy.config import Config, DatasetConfig, EmbeddingSourceKind
 from eventy.dataset import ChainBatch, EventWindowDataset, SimilarityDataset
 from eventy.model import EventyModel
+from eventy.muse import MuseText
 from eventy.runner import CustomRunner
 from eventy.sampler import DynamicImbalancedDatasetSampler
 from eventy.visualization import CustomConfusionMatrixCallback
@@ -118,6 +119,8 @@ class EventPredictionSystem:
             return fasttext.load_model(self.config.embedding_source.name)
         elif self.config.embedding_source.kind == EmbeddingSourceKind.BPEMB:
             return BPEmb()
+        elif self.config.embedding_source.kind == EmbeddingSourceKind.MUSE:
+            return MuseText(self.config.embedding_source.name)
         else:
             raise ValueError(
                 "Unkown Embedding source", self.config.embedding_source.kind
