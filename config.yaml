@@ -12,6 +12,7 @@ embedding_source:
   kind: "bpemb"
   name: "cc.en.300.bin"
 dataset:
+  min_count: 1000
   edge_markers: true
   # train_split: data/train_news.jsonlines
   # test_split: data/test_news.jsonlines

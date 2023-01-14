@@ -33,6 +33,7 @@ class DatasetConfig(BaseSettings):
     edge_markers: bool
     sampling_schedule: SamplingSchedule
     vocabulary_file: str
+    min_count: int
 
 
 class LossKind(str, Enum):

@@ -47,7 +47,7 @@ STOP_EVENTS = [
 ]
 
 
-def build_vocabulary(vocabulary_file):
+def build_vocabulary(vocabulary_file, min_count):
     vocabulary = []
     for line in open(vocabulary_file):
         count, lemma = line.strip().split(" ")
@@ -75,7 +75,9 @@ class EventPredictionSystem:
         if device_override is not None:
             self.config.device = device_override
         self.ft = self.get_embedder()
-        self.vocabulary = build_vocabulary(self.config.dataset.vocabulary_file)
+        self.vocabulary = build_vocabulary(
+            self.config.dataset.vocabulary_file, self.config.dataset.min_count
+        )
         self.loaders = get_dataset(
             self.vocabulary,
             window_size=self.config.window_size,
@@ -275,6 +277,11 @@ def similarity(
         "data/similarity_chains_de.jsonlines",
         fast_text=prediciton_system.ft,
         window_size=prediciton_system.config.window_size,
+        edge_markers=True,
+        vocabulary=build_vocabulary(
+            prediciton_system.config.dataset.vocabulary_file,
+            prediciton_system.config.dataset.min_count,
+        ),
     )
     loader = DataLoader(
         dataset,
