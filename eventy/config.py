@@ -85,11 +85,15 @@ class Config(BaseSettings, LoadableConfig):
         data = dict(self)
 
         def unnested(data_in, prefix=""):
-            out = {prefix + k: v for k, v in data_in.items() if not isinstance(v, dict)}
+            out = {
+                prefix + k: v
+                for k, v in data_in.items()
+                if not isinstance(v, BaseSettings)
+            }
             update = [
-                unnested(value, prefix=key + ".")
+                unnested(dict(value), prefix=key + ".")
                 for key, value in data_in.items()
-                if isinstance(value, dict)
+                if isinstance(value, BaseSettings)
             ]
             for up in update:
                 while len(set(up.keys()) & set(out.keys())) > 0:
