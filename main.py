@@ -1,3 +1,4 @@
+import ast
 import datetime
 import itertools
 import json
@@ -69,10 +70,12 @@ class EventPredictionSystem:
         splits: List[str] = ["train", "validation"],
         log: bool = True,
         device_override: Optional[str] = None,
+        overrides: Dict[str, any] = {},
     ):
         self.run_name = run_name or str(datetime.datetime.utcnow())
         self.logdir = Path(f"./logs") / self.run_name
         self.config = EventPredictionSystem.load_config(Path(config_path))
+        self.set_overrides(overrides)
         if device_override is not None:
             self.config.device = device_override
         self.ft = self.get_embedder()
@@ -107,6 +110,14 @@ class EventPredictionSystem:
         if log:
             self.wandb_logger = dl.WandbLogger("simple-event-predict", entity="hatzel")
             self.wandb_logger.log_hparams(self.config.to_one_level_dict())
+
+    def set_overrides(self, overrides: Dict[str, any]):
+        for override_path, value in overrides.items():
+            elements = override_path.split(".")
+            sub_config = self.config
+            for el in elements[:-1]:
+                sub_config = getattr(sub_config, el)
+            setattr(sub_config, elements[-1], ast.literal_eval(value))
 
     def get_baselines_results(self) -> str:
         return (
@@ -256,8 +267,10 @@ class EventPredictionSystem:
 
 
 @app.command()
-def train(quick_run: bool = False):
-    prediciton_system = EventPredictionSystem(quick_run=quick_run)
+def train(quick_run: bool = False, overrides: List[str] = []):
+    prediciton_system = EventPredictionSystem(
+        quick_run=quick_run, overrides=dict([o.split("=") for o in overrides])
+    )
     print(prediciton_system.get_baselines_results())
     prediciton_system.train()
 
