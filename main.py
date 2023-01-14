@@ -307,7 +307,7 @@ def similarity(
         ),
         batch_size=batch_size,
     )
-    embeddings = defaultdict(list)
+    embeddings = {}
     for batch, ids in loader:
         prediciton_system.model.eval()
         on_device_batch: ChainBatch = batch.to(device)
@@ -321,19 +321,37 @@ def similarity(
             on_device_batch.subject_embeddings,
         )
         for doc_id, embedding in zip(ids, model_output.embeddings):
-            embeddings[doc_id].append(embedding)
+            embeddings[doc_id] = embeddings.get(doc_id, []) + [embedding.cpu()]
     predicted_sims = []
     all_similarities = defaultdict(list)
+    skipped = 0
+    total = 0
     for (doc_a, doc_b), similarities in dataset.similarities.items():
-        if len(embeddings[doc_a]) == 0 or len(embeddings[doc_b]) == 0:
-            print("skipping")
+        total += 1
+        if len(embeddings.get(doc_a, [])) == 0 or len(embeddings.get(doc_b, [])) == 0:
+            skipped += 1
             continue
         doc_a_embeddings = torch.stack(embeddings[doc_a])
         doc_b_embeddings = torch.stack(embeddings[doc_b])
-        sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
-        predicted_sims.append(sims.max(0).values.mean() + sims.max(1).values.mean())
+        # sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
+        # sims.fill_diagonal_(0)
+        # predicted_sims.append(sims.max(0).values.mean() + sims.max(1).values.mean())
+        # Let's just take the middle embedding for now, buuut actually the first performed better in our initial test
+        predicted_sims.append(
+            1
+            - torch.nn.functional.cosine_similarity(
+                doc_a_embeddings[len(doc_a_embeddings) // 2],
+                doc_b_embeddings[len(doc_b_embeddings) // 2],
+                dim=0,
+            )
+        )
         for k, v in similarities.items():
             all_similarities[k].append(v)
+
+    print(
+        f"Skipped {skipped} documents out of {total} that's {skipped / total * 100:.2f}%"
+    )
+    print([t.item() for t in predicted_sims[:10]])
 
     for dimension, sim_list in all_similarities.items():
         corr = torch.corrcoef(

@@ -1,7 +1,7 @@
 import dataclasses
 import json
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -163,7 +163,9 @@ def _get_windows(events: List[List[Event]], window_size: int, vocabulary: List[s
     windows = []
     for sublist in events:
         for offset in get_predictable_lemmas(sublist, vocabulary):
-            if offset > window_size // 2 and offset + (window_size // 2) < len(sublist):
+            if offset >= window_size // 2 and offset + (window_size // 2) <= len(
+                sublist
+            ):
                 windows.append(
                     tuple(
                         sublist[
@@ -372,7 +374,7 @@ class SimilarityDataset(EventWindowDataset):
         self.doc_id_positions = {}
         for i, line in enumerate(in_file):
             data = json.loads(line)
-            local_doc_ids = [data["doc_id_1"], data["doc_id_2"]]
+            local_doc_ids = [data[f"doc_id_1"], data["doc_id_2"]]
             for chains_data, doc_id in zip(
                 [data["chains_1"], data["chains_2"]], local_doc_ids
             ):
@@ -386,13 +388,11 @@ class SimilarityDataset(EventWindowDataset):
                     for window in windows:
                         assert window[len(window) // 2].lemma in self.vocabulary
                     self.chains.extend(windows)
-                    self.doc_id_positions[doc_id] = list(
-                        range(len(self.doc_ids), len(self.chains))
-                    )
                     self.doc_ids.extend([doc_id] * len(windows))
-                    self.similarities[tuple(local_doc_ids)] = data["similarities"]
-        # remove all duplicates
-        self.chains = list(set(self.chains))
+                    self.doc_id_positions[doc_id] = self.doc_id_positions.get(
+                        doc_id, []
+                    ) + list(range(len(self.chains) - len(windows), len(self.chains)))
+            self.similarities[tuple(local_doc_ids)] = data["similarities"]
 
     def __getitem__(self, n):
         return super().__getitem__(n), self.doc_ids[n]
