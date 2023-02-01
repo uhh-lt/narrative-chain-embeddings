@@ -181,7 +181,7 @@ class EventPredictionSystem:
                 max_lr=self.config.learning_rate,
                 div_factor=20,
                 final_div_factor=100,
-                pct_start=0.1,
+                pct_start=0.3,
             ),
             loggers={
                 "console": dl.ConsoleLogger(),
