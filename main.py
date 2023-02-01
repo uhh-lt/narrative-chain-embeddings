@@ -1,12 +1,10 @@
 import ast
 import datetime
-import itertools
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import fasttext
 import numpy as np
 import torch
 import typer
@@ -21,12 +19,14 @@ from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.embedding import EmbeddingVisualizerCallback
 from eventy.callbacks.multiple_choice import MultipleChoiceCallback
 from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
-from eventy.config import Config, DatasetConfig, EmbeddingSourceKind
+from eventy.config import Config, DatasetConfig, EmbeddingSourceKind, ModelKind
 from eventy.dataset import ChainBatch, EventWindowDataset, SimilarityDataset
+from eventy.fasttext_wrapper import FasttextWrapper
 from eventy.model import EventyModel
 from eventy.muse import MuseText
 from eventy.runner import CustomRunner
 from eventy.sampler import DynamicImbalancedDatasetSampler
+from eventy.transformer_model import EventyTransformerModel
 from eventy.visualization import CustomConfusionMatrixCallback
 
 app = typer.Typer()
@@ -72,8 +72,6 @@ class EventPredictionSystem:
         device_override: Optional[str] = None,
         overrides: Dict[str, any] = {},
     ):
-        self.run_name = run_name or str(datetime.datetime.utcnow())
-        self.logdir = Path(f"./logs") / self.run_name
         self.config = EventPredictionSystem.load_config(Path(config_path))
         self.set_overrides(overrides)
         if device_override is not None:
@@ -88,7 +86,7 @@ class EventPredictionSystem:
             ft=self.ft,
             dataset_config=self.config.dataset,
             batch_size=self.config.batch_size,
-            size_limit=10000 if quick_run else None,
+            size_limit=10_000 if quick_run else None,
             splits=splits,
         )
         try:
@@ -100,16 +98,23 @@ class EventPredictionSystem:
                 "Warning: no label distribution, regular evaluation will fail (fine if you are doing similarity evaluation)!"
             )
             self.distribution = torch.zeros(100)
-        self.model = self.init_model()
+        self.model = self.init_model(self.config.model.kind)
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.config.learning_rate
         )
         self.runner = CustomRunner(
             class_distribution=self.distribution, losses=self.config.loss
         )
+        self.wandb_logger = None
         if log:
             self.wandb_logger = dl.WandbLogger("simple-event-predict", entity="hatzel")
             self.wandb_logger.log_hparams(self.config.to_one_level_dict())
+        self.run_name = (
+            run_name
+            or (self.wandb_logger.run.name if self.wandb_logger is not None else None)
+            or str(datetime.datetime.utcnow())
+        )
+        self.logdir = Path(f"./logs") / self.run_name
 
     def set_overrides(self, overrides: Dict[str, any]):
         for override_path, value in overrides.items():
@@ -127,7 +132,7 @@ class EventPredictionSystem:
 
     def get_embedder(self):
         if self.config.embedding_source.kind == EmbeddingSourceKind.FASTTEXT:
-            return fasttext.load_model(self.config.embedding_source.name)
+            return FasttextWrapper(self.config.embedding_source.name)
         elif self.config.embedding_source.kind == EmbeddingSourceKind.BPEMB:
             return BPEmb()
         elif self.config.embedding_source.kind == EmbeddingSourceKind.MUSE:
@@ -137,16 +142,28 @@ class EventPredictionSystem:
                 "Unkown Embedding source", self.config.embedding_source.kind
             )
 
-    def init_model(self):
-        model = EventyModel(
-            output_vocab=len(self.vocabulary),
-            num_inputs=self.config.window_size,
-            class_distribution=self.distribution,
-            vocab_embeddings=torch.tensor(
-                np.stack([self.ft.get_word_vector(v) for v in self.vocabulary])
-            ),
-            dropout=self.config.model.dropout,
-        )
+    def init_model(self, kind):
+        model_conf = {k: v for k, v in dict(self.config.model).items() if k != "kind"}
+        if kind == ModelKind.TRANSFORMER:
+            model = EventyTransformerModel(
+                output_vocab=len(self.vocabulary),
+                num_inputs=self.config.window_size,
+                class_distribution=self.distribution,
+                vocab_embeddings=torch.tensor(
+                    np.stack([self.ft.get_word_vector(v) for v in self.vocabulary])
+                ),
+                **model_conf,
+            )
+        if kind == ModelKind.FFNN:
+            model = EventyModel(
+                output_vocab=len(self.vocabulary),
+                num_inputs=self.config.window_size,
+                class_distribution=self.distribution,
+                vocab_embeddings=torch.tensor(
+                    np.stack([self.ft.get_word_vector(v) for v in self.vocabulary])
+                ),
+                **model_conf,
+            )
         model.to(self.config.device)
         return model
 
@@ -162,6 +179,9 @@ class EventPredictionSystem:
                 epochs=self.config.epochs,
                 steps_per_epoch=len(self.loaders["train"]),
                 max_lr=self.config.learning_rate,
+                div_factor=20,
+                final_div_factor=100,
+                pct_start=0.1,
             ),
             loggers={
                 "console": dl.ConsoleLogger(),
@@ -175,40 +195,22 @@ class EventPredictionSystem:
                     config=self.config, logdir=self.logdir, save_name="config.yaml"
                 ),
                 dl.EarlyStoppingCallback(
-                    patience=5,
+                    patience=10,
                     metric_key="loss",
                     minimize=True,
                     loader_key="validation",
-                ),
-                EmbeddingVisualizerCallback(
-                    label_key="labels",
-                    embedding_key="new_embeddings",
-                    collect_list=["die", "walk", "celebrate", "win"]
-                    if "en" in self.config.dataset.vocabulary_file
-                    else ["lesen", "gehen", "essen", "fahren"],
-                    collection_frequency=0.1,
-                    class_names=self.vocabulary,
-                    prefix="embeddings",
-                    loader_keys="validation",
                 ),
                 MultipleChoiceCallback(
                     n_choices=5,
                     input_key="logits",
                     target_key="labels",
                     distribution=self.distribution.to(self.config.device),
+                    loader_keys=["validation", "test"],
                 ),
-                SilhouetteScoreCallback(
-                    input_key="new_embeddings",
-                    target_key="labels",
-                    sample_size=1000,
-                ),
-                CustomConfusionMatrixCallback(
-                    input_key="logits",
-                    target_key="labels",
-                    num_classes=len(self.vocabulary),
-                    class_names=self.vocabulary,
-                    normalize=True,
-                    show_numbers=False,
+                *(
+                    self.build_visualization_callbacks()
+                    if self.config.visualizations
+                    else []
                 ),
                 *self.build_accuracy_callbacks(),
             ],
@@ -218,18 +220,47 @@ class EventPredictionSystem:
             verbose=True,
         )
 
-    def test(self):
+    def build_visualization_callbacks(self):
+        return [
+            EmbeddingVisualizerCallback(
+                label_key="labels",
+                embedding_key="new_embeddings",
+                collect_list=["die", "walk", "celebrate", "win"]
+                if "en" in self.config.dataset.vocabulary_file
+                else ["lesen", "gehen", "essen", "fahren"],
+                collection_frequency=0.1,
+                class_names=self.vocabulary,
+                prefix="embeddings",
+                loader_keys=["valid"],
+            ),
+            SilhouetteScoreCallback(
+                input_key="new_embeddings",
+                target_key="labels",
+                sample_size=1000,
+            ),
+            CustomConfusionMatrixCallback(
+                input_key="logits",
+                target_key="labels",
+                num_classes=len(self.vocabulary),
+                class_names=self.vocabulary,
+                normalize=True,
+                show_numbers=False,
+            ),
+        ]
+
+    def test(self, test=False):
         self.runner.evaluate_loader(
-            loader=self.loaders["validation"],
+            loader=self.loaders["validation"] if not test else self.loaders["test"],
             model=self.model,
+            engine=dl.GPUEngine(self.config.device),
             callbacks=[
                 MultipleChoiceCallback(
                     n_choices=5,
                     input_key="logits",
                     target_key="labels",
                     distribution=self.distribution.to(self.config.device),
+                    loader_keys=["valid", "test"],
                 ),
-                *self.build_accuracy_callbacks(),
             ],
         )
 
@@ -285,10 +316,12 @@ def similarity(
     prediciton_system = EventPredictionSystem(
         config_path=Path("logs") / run_name / "config.yaml",
         quick_run=False,
-        splits=[],
+        splits=["train"],
         log=False,
         device_override=device,
     )
+    state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
+    prediciton_system.model.load_state_dict(state_dict)
     dataset = SimilarityDataset(
         "data/similarity_chains_de.jsonlines",
         fast_text=prediciton_system.ft,
@@ -307,7 +340,8 @@ def similarity(
         ),
         batch_size=batch_size,
     )
-    embeddings = {}
+    chain_embeddings = {}
+    i = 0
     for batch, ids in loader:
         prediciton_system.model.eval()
         on_device_batch: ChainBatch = batch.to(device)
@@ -320,8 +354,18 @@ def similarity(
             on_device_batch.object_embeddings,
             on_device_batch.subject_embeddings,
         )
-        for doc_id, embedding in zip(ids, model_output.embeddings):
-            embeddings[doc_id] = embeddings.get(doc_id, []) + [embedding.cpu()]
+        for full_chain_id, embedding in zip(ids, model_output.embeddings):
+            chain_embeddings[full_chain_id] = chain_embeddings.get(
+                full_chain_id, []
+            ) + [embedding.detach().cpu()]
+            if i % 100 == 0:
+                print(full_chain_id, embedding)
+            i += 1
+    embeddings = defaultdict(dict)
+    for full_chain_name, embeds in chain_embeddings.items():
+        doc_id, chain_id = full_chain_name.split("_")
+        update = {chain_id: embeds[len(embeds) // 2]}
+        embeddings[doc_id].update(update)
     predicted_sims = []
     all_similarities = defaultdict(list)
     skipped = 0
@@ -331,20 +375,29 @@ def similarity(
         if len(embeddings.get(doc_a, [])) == 0 or len(embeddings.get(doc_b, [])) == 0:
             skipped += 1
             continue
-        doc_a_embeddings = torch.stack(embeddings[doc_a])
-        doc_b_embeddings = torch.stack(embeddings[doc_b])
-        # sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
-        # sims.fill_diagonal_(0)
-        # predicted_sims.append(sims.max(0).values.mean() + sims.max(1).values.mean())
-        # Let's just take the middle embedding for now, buuut actually the first performed better in our initial test
-        predicted_sims.append(
-            1
-            - torch.nn.functional.cosine_similarity(
-                doc_a_embeddings[len(doc_a_embeddings) // 2],
-                doc_b_embeddings[len(doc_b_embeddings) // 2],
-                dim=0,
-            )
+        doc_a_embeddings = torch.stack(
+            [emb for _, emb in sorted(embeddings[doc_a].items(), key=lambda x: x[0])]
         )
+        doc_b_embeddings = torch.stack(
+            [emb for _, emb in sorted(embeddings[doc_b].items(), key=lambda x: x[0])]
+        )
+        sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
+        if total == 1:
+            print("Emb", embeddings[doc_a])
+            print(doc_a, doc_b)
+            print(doc_a_embeddings, doc_b_embeddings)
+        predicted_sims.append(
+            1 - (sims.max(0).values.mean() + sims.max(1).values.mean()) / 2
+        )
+        # Let's just take the middle embedding for now, buuut actually the first performed better in our initial test
+        # predicted_sims.append(
+        #     1
+        #     - torch.nn.functional.cosine_similarity(
+        #         doc_a_embeddings[len(doc_a_embeddings) // 2],
+        #         doc_b_embeddings[len(doc_b_embeddings) // 2],
+        #         dim=0,
+        #     )
+        # )
         for k, v in similarities.items():
             all_similarities[k].append(v)
 
@@ -361,17 +414,16 @@ def similarity(
 
 
 @app.command()
-def test(run_name: str, test_set: bool = False):
+def test(run_name: str, test_set: bool = False, quick_run: bool = False):
     prediciton_system = EventPredictionSystem(
         config_path=Path("logs") / run_name / "config.yaml",
-        quick_run=True,
         splits=(["test"] if test_set else ["validation"]) + ["train"],
+        quick_run=quick_run,
         log=False,
     )
     state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
     prediciton_system.model.load_state_dict(state_dict)
     prediciton_system.test()
-    # TODO: we need to load the model and the test set here + optionally the dev set instead (actually dev should be default)
 
 
 @app.command()
@@ -399,9 +451,11 @@ def get_dataset(
     batch_size,
     size_limit: Optional[int] = None,
     splits: List[str] = ["train", "validation"],
+    debug_log: bool = True,
 ):
     loaders = {}
     for split in splits:
+        print("split", split)
         dataset = EventWindowDataset(
             getattr(dataset_config, split + "_split"),
             vocabulary=vocabulary,
@@ -409,9 +463,10 @@ def get_dataset(
             over_sampling=False,
             edge_markers=dataset_config.edge_markers,
             fast_text=ft,
+            min_chain_len=20 if split == "validation" else None,
             size_limit=size_limit,
         )
-        if split == "train":
+        if split == "train" and debug_log:
             print("Labels", dataset.get_label_counts())
             print("Labels relative", dataset.get_label_distribution())
         sampler = None

@@ -1,4 +1,7 @@
+from functools import lru_cache
+
 import bpemb
+import torch
 
 
 class BPEmb:
@@ -13,5 +16,6 @@ class BPEmb:
             dim=300,
         )
 
+    @lru_cache(2_000_000)
     def get_word_vector(self, word):
-        return self.inner.vectors[self.inner.encode_ids(word)].mean(0)
+        return torch.from_numpy(self.inner.vectors[self.inner.encode_ids(word)].mean(0))

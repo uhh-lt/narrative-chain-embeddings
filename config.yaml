@@ -5,25 +5,28 @@ epochs: 100
 learning_rate: 5e-3 # 3e-3 best, 2e-3 may be faster, 5e-3 is too much!
 # learning_rate: 3e-3 # 3e-3 best, 2e-3 may be faster, 5e-3 is too much!
 model:
+  kind: "transformer"
   dropout: 0.5
+  model_characters: true
+  model_character_names: true
 embedding_source:
   # kind: "fasttext"
   # name: "cc.en.300.bin"
-  kind: "bpemb"
+  kind: "fasttext"
   name: "cc.en.300.bin"
 dataset:
-  min_count: 1000
+  min_count: 500
   edge_markers: true
   # train_split: data/train_news.jsonlines
   # test_split: data/test_news.jsonlines
   # validation_split: data/dev_news.jsonlines
-  train_split: data/train_gigaword_nyt_2003.jsonlines
-  test_split: data/test_gigaword_nyt_2003.jsonlines
-  validation_split: data/dev_gigaword_nyt_2003.jsonlines
-  vocabulary_file: "top_lemmas_en.txt"
+  train_split: data/gigaword/tenth/train.jsonlines
+  test_split: data/gigaword/tenth/test.jsonlines
+  validation_split: data/gigaword/tenth/dev.jsonlines
+  vocabulary_file: "data/gigaword/top_lemmas.txt"
   # train_split: data/train_news_sample.jsonlines
   # test_split: data/test_news_sample.jsonlines
   # validation_split: data/dev_news_sample.jsonlines
   sampling_schedule: real
 loss:
-  - embedding
+  - euclidean

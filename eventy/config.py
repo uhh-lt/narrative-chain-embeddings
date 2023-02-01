@@ -40,10 +40,19 @@ class DatasetConfig(BaseSettings):
 class LossKind(str, Enum):
     EMBEDDING = "embedding"
     CLASSIFICATION = "classification"
+    EUCLIDEAN = "euclidean"
+
+
+class ModelKind(str, Enum):
+    FFNN = "ffnn"
+    TRANSFORMER = "transformer"
 
 
 class ModelConfig(BaseSettings):
+    kind: ModelKind = ModelKind.FFNN
     dropout: float
+    model_characters: bool = True
+    model_character_names: bool = True
 
 
 class LoadableConfig(ABC):
@@ -58,6 +67,8 @@ class LoadableConfig(ABC):
 class Config(BaseSettings, LoadableConfig):
     device: str
     epochs: int = 1
+    # Wheter to log images of confusion matrices etc
+    visualizations: bool = False
     batch_size: int
     window_size: int
     learning_rate: float

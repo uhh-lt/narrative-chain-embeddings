@@ -64,6 +64,7 @@ class CustomRunner(dl.Runner):
             on_device_batch.label_embeddings,
             on_device_batch.object_embeddings,
             on_device_batch.subject_embeddings,
+            on_device_batch.iobject_embeddings,
         )
         self.batch.logits = model_output.logits
         self.batch.cosine_similarities = model_output.cosine_similarities
@@ -74,6 +75,8 @@ class CustomRunner(dl.Runner):
             losses.append(model_output.embedding_loss)
         if LossKind.EMBEDDING in self.losses:
             losses.append(model_output.classification_loss)
+        if LossKind.EUCLIDEAN in self.losses:
+            losses.append(model_output.euclidean_loss)
         loss = torch.stack(losses).mean()
         self.batch_metrics.update(
             {

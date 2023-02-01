@@ -23,8 +23,9 @@ class EventyModel(nn.Module):
     ):
         super().__init__(*args, **kwargs)
         self.dropout_chance = dropout
+        self.output_vocab = output_vocab
         self.vocab_embeddings = torch.nn.parameter.Parameter(
-            vocab_embeddings, requires_grad=False
+            torch.nn.functional.normalize(vocab_embeddings), requires_grad=False
         )
         self.model_characters = model_characters
         self.model_character_names = model_character_names
@@ -36,7 +37,7 @@ class EventyModel(nn.Module):
         )
         self.embedding_size = embedding_size
         self.hidden_size_1 = 1024
-        self.hidden_size_2 = 1024
+        self.hidden_size_2 = 256
         self.num_inputs = num_inputs
         self.chain_input_size = embedding_size * num_inputs
         self.test = nn.Linear(embedding_size * num_inputs, self.hidden_size_1)
@@ -53,9 +54,20 @@ class EventyModel(nn.Module):
             nn.Linear(
                 embedding_size * num_inputs
                 + self.character_embeddings_size * num_inputs * 2
+                + self.embedding_size * num_inputs
                 + (
                     self.embedding_size * num_inputs * 2 if model_character_names else 0
                 ),
+                self.hidden_size_1,
+            ),
+            nn.Sigmoid(),
+            # nn.Linear(
+            #     self.hidden_size_1,
+            #     self.hidden_size_1,
+            # ),
+            # nn.Sigmoid(),
+            nn.Linear(
+                self.hidden_size_1,
                 self.hidden_size_1,
             ),
             nn.Sigmoid(),
@@ -70,6 +82,8 @@ class EventyModel(nn.Module):
         # self.loss = nn.CrossEntropyLoss(weight=1 / self.class_distribution)
         self.loss = nn.CrossEntropyLoss()
         embedding_loss_func = nn.CosineEmbeddingLoss(reduction="none")
+        euclidean_loss_func = nn.MSELoss(reduction="none")
+        self.euclidean_loss = lambda labels, *args: (euclidean_loss_func(*args))
         self.embedding_loss = lambda labels, *args: (
             embedding_loss_func(*args)
             # * (1 / self.class_distribution).index_select(0, labels).unsqueeze(0)
@@ -84,6 +98,7 @@ class EventyModel(nn.Module):
         label_embeddings: torch.Tensor,
         object_text_embeddings: torch.Tensor,
         subject_text_embeddings: torch.Tensor,
+        iobject_embeddings: torch.Tensor,
     ):
         reshaped = embeddings.reshape(-1, self.chain_input_size)
         if self.model_characters:
@@ -92,6 +107,15 @@ class EventyModel(nn.Module):
             ).reshape(-1, self.character_embeddings_size * self.num_inputs)
             object_embeddings = self.char_embedding_layer(object_hot_encodings).reshape(
                 -1, self.character_embeddings_size * self.num_inputs
+            )
+            object_embeddings = torch.cat(
+                [
+                    object_embeddings,
+                    iobject_embeddings.reshape(
+                        -1, self.embedding_size * self.num_inputs
+                    ),
+                ],
+                1,
             )
             if self.model_character_names:
                 object_embeddings = torch.cat(
@@ -120,18 +144,25 @@ class EventyModel(nn.Module):
         else:
             embeddings = self.input_layer(reshaped)
             logits = self.output_layer(embeddings)
-        embedding_mixes = (
-            self.vocab_embeddings * (logits**2).softmax(-1).unsqueeze(-1)
-        ).mean(1)
+        embedding_mixes = torch.nn.functional.normalize(
+            (self.vocab_embeddings * (logits**2).softmax(-1).unsqueeze(-1)).mean(1)
+        )
         ft_embedding_loss = self.embedding_loss(
             labels,
             embedding_mixes,
             label_embeddings,
             torch.ones(logits.shape[0], device=labels.device),
         )
+        ft_euclidean_loss = self.euclidean_loss(
+            labels,
+            embedding_mixes,
+            label_embeddings,
+        )
         loss = self.loss(logits, labels)
         similarities = 1 - cosine_similarity(embedding_mixes, self.vocab_embeddings)
-        return BatchOutput(logits, similarities, loss, ft_embedding_loss, embeddings)
+        return BatchOutput(
+            logits, similarities, loss, ft_embedding_loss, ft_euclidean_loss, embeddings
+        )
 
 
 @dataclass
@@ -140,6 +171,7 @@ class BatchOutput:
     cosine_similarities: torch.Tensor
     classification_loss: torch.Tensor
     embedding_loss: torch.Tensor
+    euclidean_loss: torch.Tensor
     embeddings: torch.Tensor
 
     def __getitem__(self, item):

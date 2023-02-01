@@ -1,4 +1,4 @@
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import torch
 from catalyst.callbacks import BatchMetricCallback
@@ -17,8 +17,15 @@ class MultipleChoiceCallback(BatchMetricCallback):
         prefix: str = None,
         suffix: str = None,
         distribution: Optional[torch.Tensor] = None,
+        loader_keys: List[str] = [],
     ):
-        """Init."""
+        """
+        Init.
+
+        Unlike the parent class we have a laoder_keys argument in which you can specify which splits to evaluate this on.
+        This is necessary as the operation is very expensive and actually takes about half the time when running on a big GPU server.
+        """
+        self.loader_keys = loader_keys
         super().__init__(
             metric=MultipleChoiceMetric(
                 topk=topk,
@@ -33,6 +40,18 @@ class MultipleChoiceCallback(BatchMetricCallback):
             log_on_batch=log_on_batch,
         )
 
+    def on_loader_start(self, runner: "IRunner") -> None:
+        if runner.loader_key in self.loader_keys:
+            super().on_loader_start(runner)
+
+    def on_batch_end(self, runner: "IRunner") -> None:
+        if runner.loader_key in self.loader_keys:
+            super().on_batch_end(runner)
+
+    def on_loader_end(self, runner: "IRunner") -> None:
+        if runner.loader_key in self.loader_keys:
+            super().on_loader_end(runner)
+
 
 def multiple_choice(
     outputs: torch.Tensor,
@@ -45,12 +64,11 @@ def multiple_choice(
     batch_size = targets.size(0)
     num_classes = outputs.size(1)
 
-    # TODO: sample using distribution
     if distribution is None:
         distribution = torch.ones(num_classes, device=outputs.device)
-    random_options = torch.stack(
-        [torch.multinomial(distribution, num_options - 1) for _ in range(batch_size)]
-    )
+    random_options = torch.multinomial(
+        distribution, (num_options - 1) * batch_size, replacement=True
+    ).reshape(batch_size, num_options - 1)
     # torch.multinomial(distribution, (batch_size * num_options - 1), replacement=True)
     # random_options = torch.randint(0, num_classes - 1, (batch_size, num_options - 1), device=outputs.device)
     options = torch.cat((random_options, targets.reshape(-1, 1)), dim=1)
