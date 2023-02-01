@@ -455,15 +455,14 @@ def get_dataset(
 ):
     loaders = {}
     for split in splits:
-        print("split", split)
         dataset = EventWindowDataset(
             getattr(dataset_config, split + "_split"),
             vocabulary=vocabulary,
             window_size=window_size,
             over_sampling=False,
-            edge_markers=dataset_config.edge_markers,
+            edge_markers=dataset_config.edge_markers if split == "train" else False,
             fast_text=ft,
-            min_chain_len=20 if split == "validation" else None,
+            min_chain_len=8,
             size_limit=size_limit,
         )
         if split == "train" and debug_log:

@@ -196,7 +196,7 @@ def _get_windows(events: List[List[Event]], window_size: int, vocabulary: List[s
     windows = []
     for sublist in events:
         for offset in get_predictable_lemmas(sublist, vocabulary):
-            if offset >= window_size // 2 and offset + (window_size // 2) <= len(
+            if offset >= window_size // 2 and offset + (window_size // 2) < len(
                 sublist
             ):
                 windows.append(
