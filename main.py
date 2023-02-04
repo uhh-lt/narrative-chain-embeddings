@@ -1,6 +1,8 @@
 import ast
 import datetime
 import json
+import os
+import pickle
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -89,15 +91,20 @@ class EventPredictionSystem:
             size_limit=10_000 if quick_run else None,
             splits=splits,
         )
-        try:
-            self.distribution = EventWindowDataset.get_class_distribution(
-                self.loaders["train"].dataset
-            )
-        except KeyError:
-            print(
-                "Warning: no label distribution, regular evaluation will fail (fine if you are doing similarity evaluation)!"
-            )
-            self.distribution = torch.zeros(100)
+        if os.path.exists(cache_path := self.config.dataset.train_split + ".cache"):
+            self.distribution = pickle.load(open(cache_path, "rb"))
+        else:
+            try:
+                self.distribution = EventWindowDataset.get_class_distribution(
+                    self.loaders["train"].dataset
+                )
+                if not quick_run:
+                    pickle.dump(self.distribution, open(cache_path, "wb"))
+            except KeyError:
+                print(
+                    "Warning: no label distribution, regular evaluation will fail (fine if you are doing similarity evaluation)!"
+                )
+                self.distribution = torch.zeros(100)
         self.model = self.init_model(self.config.model.kind)
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.config.learning_rate
@@ -196,7 +203,7 @@ class EventPredictionSystem:
                 ),
                 dl.EarlyStoppingCallback(
                     patience=10,
-                    metric_key="loss",
+                    metric_key="5_choice_accuracy01",
                     minimize=True,
                     loader_key="validation",
                 ),
@@ -289,7 +296,7 @@ class EventPredictionSystem:
         ]
 
     @staticmethod
-    def load_config(config_path: Path):
+    def load_config(config_path: Path) -> Config:
         config = Config.load_file(config_path)
         return config
 
@@ -417,13 +424,13 @@ def similarity(
 def test(run_name: str, test_set: bool = False, quick_run: bool = False):
     prediciton_system = EventPredictionSystem(
         config_path=Path("logs") / run_name / "config.yaml",
-        splits=(["test"] if test_set else ["validation"]) + ["train"],
+        splits=(["test"] if test_set else ["validation"]),
         quick_run=quick_run,
         log=False,
     )
     state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
     prediciton_system.model.load_state_dict(state_dict)
-    prediciton_system.test()
+    prediciton_system.test(test_set)
 
 
 @app.command()
@@ -462,7 +469,7 @@ def get_dataset(
             over_sampling=False,
             edge_markers=dataset_config.edge_markers if split == "train" else False,
             fast_text=ft,
-            min_chain_len=8,
+            min_chain_len=None if split == "train" else 8,
             size_limit=size_limit,
         )
         if split == "train" and debug_log:

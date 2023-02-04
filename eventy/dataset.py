@@ -262,6 +262,7 @@ class EventWindowDataset(Dataset):
             chain = [
                 Event.from_json(e)
                 for e in (data["chains"] if isinstance(data, dict) else data)
+                if e["verb"] in self.vocabulary
             ]
             if min_chain_len is not None and len(chain) < min_chain_len:
                 continue
