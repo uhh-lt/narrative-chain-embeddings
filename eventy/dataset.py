@@ -33,7 +33,10 @@ class Event:
 
     @classmethod
     def from_json(cls, data: Dict) -> "Event":
-        iobjs = tuple(o for o in data["iobject"] or [] if o is not None) or None
+        iobjs = (
+            tuple(o for o in (data["iobject"] or {}).values() or [] if o is not None)
+            or None
+        )
         event = Event(
             lemma=data["verb_lemma"],
             objects=tuple(data["objects"]),
@@ -261,8 +264,8 @@ class EventWindowDataset(Dataset):
             data = json.loads(line)
             chain = [
                 Event.from_json(e)
-                for e in (data["chains"] if isinstance(data, dict) else data)
-                if e["verb"] in self.vocabulary
+                for e in (data["chain"] if isinstance(data, dict) else data)
+                if e["verb_lemma"] in self.vocabulary
             ]
             if min_chain_len is not None and len(chain) < min_chain_len:
                 continue
