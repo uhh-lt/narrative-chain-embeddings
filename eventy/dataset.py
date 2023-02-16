@@ -1,6 +1,5 @@
 import dataclasses
 import timeit
-from functools import cache, lru_cache
 
 from tqdm import tqdm
 
@@ -65,6 +64,7 @@ class Chain:
     object_embeddings: List[np.array]
     iobject_embeddings: List[str]
     iobject_names: List[str]
+    masked: int
 
     def __init__(
         self,
@@ -275,6 +275,8 @@ class EventWindowDataset(Dataset):
                 )
             windows = get_windows(chain, self.window_size, self.vocab_set)
             for window in windows:
+                assert len(window) == self.window_size
+            for window in windows:
                 assert window[len(window) // 2].lemma in self.vocabulary
             self.chains.extend(windows)
             if size_limit and size_limit <= i:
@@ -472,11 +474,13 @@ class SimilarityDataset(EventWindowDataset):
         self.doc_id_positions = {}
         for i, line in enumerate(in_file):
             data = json.loads(line)
-            local_doc_ids = [data[f"doc_id_1"], data["doc_id_2"]]
-            for i, (chains_data, doc_id) in enumerate(
-                zip([data["chains_1"], data["chains_2"]], local_doc_ids)
+            if len(data["chains_1"]) == 0 or len(data["chains_2"]) == 0:
+                continue
+            local_doc_ids = [data["doc_id_1"], data["doc_id_2"]]
+            for (chains_data, doc_id) in zip(
+                [data["chains_1"], data["chains_2"]], local_doc_ids
             ):
-                for chain_data in chains_data:
+                for i, chain_data in enumerate(chains_data):
                     chain = [Event.from_json(e) for e in chain_data]
                     if edge_markers:
                         chain = EventWindowDataset.add_edge_markers(
@@ -492,6 +496,7 @@ class SimilarityDataset(EventWindowDataset):
                         doc_id, []
                     ) + list(range(len(self.chains) - len(windows), len(self.chains)))
             self.similarities[tuple(local_doc_ids)] = data["similarities"]
+        self.chain_cache = [None for _ in self.chains]
 
     def __getitem__(self, n):
         return super().__getitem__(n), self.doc_ids[n] + "_" + self.chain_ids[n]

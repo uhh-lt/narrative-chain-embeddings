@@ -26,6 +26,7 @@ class EmbeddingVisualizerCallback(Callback):
         ] = None,
         prefix: Optional[str] = None,
         loader_keys: Optional[List[str]] = None,
+        out_path: Optional[str] = None,
     ):
         """
         Args:
@@ -47,6 +48,7 @@ class EmbeddingVisualizerCallback(Callback):
         self.embedding_key = embedding_key
         self.dimensionality_reducer = dimensionality_reducer
         self.collect_list = collect_list
+        self.out_path = out_path
         if isinstance(collection_frequency, list):
             if len(collect_list) != len(collection_frequency):
                 raise ValueError(
@@ -69,7 +71,7 @@ class EmbeddingVisualizerCallback(Callback):
     def on_loader_end(self, runner: "IRunner") -> None:
         if self.loader_keys is not None and runner.loader_key not in self.loader_keys:
             return
-        self.show_embeddings(runner)
+        self.show_embeddings(runner, self.out_path)
         self.embeddings = []
         self.labels = []
 

@@ -64,9 +64,9 @@ class EventyTransformerModel(EventyModel):
                 [subject_embeddings, embeddings, object_embeddings], 2
             )
         reduced = self.reduction_layer(embeddings)
-        out = self.transformer(inputs_embeds=reduced)
-        predict = out.last_hidden_state[:, self.num_inputs // 2, :]
-        logits = self.classification_layer(predict)
+        out = self.transformer(inputs_embeds=reduced, output_hidden_states=True)
+        predict_emb = out.last_hidden_state[:, self.num_inputs // 2, :]
+        logits = self.classification_layer(predict_emb)
         embedding_mixes = torch.nn.functional.normalize(
             (self.vocab_embeddings * (logits**2).softmax(-1).unsqueeze(-1)).mean(1)
         )
@@ -84,5 +84,10 @@ class EventyTransformerModel(EventyModel):
         loss = self.loss(logits, labels)
         similarities = 1 - cosine_similarity(embedding_mixes, self.vocab_embeddings)
         return BatchOutput(
-            logits, similarities, loss, ft_embedding_loss, ft_euclidean_loss, embeddings
+            logits,
+            similarities,
+            loss,
+            ft_embedding_loss,
+            ft_euclidean_loss,
+            predict_emb,
         )

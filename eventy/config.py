@@ -1,12 +1,16 @@
 import os
 import pathlib
 from abc import ABC
+from ast import Dict
 from enum import Enum
 from tkinter.tix import REAL
 from typing import List, Optional, Union
 
 from pydantic import BaseSettings, validator
+from pydantic.utils import deep_update
 from pydantic_loader.yaml_config import load_yaml, save_yaml
+
+import wandb
 
 
 class SamplingSchedule(str, Enum):
@@ -118,3 +122,7 @@ class Config(BaseSettings, LoadableConfig):
             return out
 
         return unnested(data)
+
+    def update(self, config: wandb.Config):
+        d = deep_update(dict(self), config.as_dict())
+        return Config(**d)
