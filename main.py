@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 
 import eventy
 import wandb
+from eventy import interactive
 from eventy.bpemb import BPEmb
 from eventy.callbacks.config import ConfigCallback
 from eventy.callbacks.early_stopping import LoggingEarlyStopper
@@ -24,7 +25,14 @@ from eventy.callbacks.embedding import EmbeddingVisualizerCallback
 from eventy.callbacks.multiple_choice import MultipleChoiceCallback
 from eventy.callbacks.silhouette_score import SilhouetteScoreCallback
 from eventy.config import Config, DatasetConfig, EmbeddingSourceKind, ModelKind
-from eventy.dataset import ChainBatch, EventWindowDataset, SimilarityDataset
+from eventy.dataset import (
+    Chain,
+    ChainBatch,
+    Event,
+    EventWindowDataset,
+    SimilarityDataset,
+    get_windows,
+)
 from eventy.fasttext_wrapper import FasttextWrapper
 from eventy.model import EventyModel
 from eventy.muse import MuseText
@@ -80,6 +88,7 @@ class EventPredictionSystem:
         device_override: Optional[str] = None,
         overrides: Dict[str, any] = {},
         loaders: Dict = None,
+        shuffle_chains: bool = False,
     ):
         self.wandb_logger = None
         if log:
@@ -109,8 +118,9 @@ class EventPredictionSystem:
             ft=self.ft,
             dataset_config=self.config.dataset,
             batch_size=self.config.batch_size,
-            size_limit=10_000 if quick_run else None,
+            size_limit=100_000 if quick_run else None,
             splits=splits,
+            shuffle_chains=shuffle_chains,
         )
         if os.path.exists(
             cache_path := self.config.dataset.train_split
@@ -229,6 +239,11 @@ class EventPredictionSystem:
                     target_key="labels",
                     distribution=self.distribution.to(self.config.device),
                     loader_keys=["validation", "test"],
+                ),
+                SilhouetteScoreCallback(
+                    input_key="new_embeddings",
+                    target_key="labels",
+                    sample_size=10_000,
                 ),
                 *(
                     self.build_visualization_callbacks()
@@ -361,40 +376,92 @@ def fasttext_embedding_baseline(
     json_path: str = "data/semeval_eval_en.jsonlines",
     embedding_src: str = "cc.en.300.bin",
 ):
-    embedder = FasttextWrapper(embedding_src)
+    # The longer the chain, the closer values are to 0.5 when random
+    # long chains are potentially more similary
+    torch.manual_seed(42)
+
+    class RandomEmbedder:
+        def __init__(self):
+            pass
+
+        def get_word_vector(self, _lemma):
+            return torch.rand(300, dtype=torch.float)
+
+    # embedder = FasttextWrapper(embedding_src)
+    embedder = RandomEmbedder()
     gold_sims = defaultdict(list)
     predicted_sims = []
+    predicted_sims_matrix = []
+    predicted_sims_words = []
     for line in open(json_path):
         data = json.loads(line)
         embeddings_1 = []
         embeddings_2 = []
+        word_embeddings_1 = []
+        word_embeddings_2 = []
         if len(data["chains_1"]) == 0 or len(data["chains_2"]) == 0:
             continue
+        embedding_1 = torch.zeros(300, dtype=torch.float)
+        embedding_2 = torch.zeros(300, dtype=torch.float)
         for chain in data["chains_1"]:
-            embeddings_1.append(
-                torch.stack(
-                    [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
-                ).mean(0)
+            chain_embedding = torch.stack(
+                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
+            ).mean(0)
+            word_embeddings_1.extend(
+                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
             )
+            embeddings_1.append(chain_embedding)
+            embedding_1 += chain_embedding
         for chain in data["chains_2"]:
-            embeddings_2.append(
-                torch.stack(
-                    [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
-                ).mean(0)
+            chain_embedding = torch.stack(
+                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
+            ).mean(0)
+            word_embeddings_2.extend(
+                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
             )
+            embeddings_2.append(chain_embedding)
+            embedding_2 += chain_embedding
+        embedding_1 /= len(embeddings_1)
+        embedding_2 /= len(embeddings_2)
         sims = eventy.util.cosine_similarity(
             torch.stack(embeddings_1), torch.stack(embeddings_2)
         )
         sims.fill_diagonal_(0)
-        predicted_sims.append(
+        predicted_sims_matrix.append(
             1 - (sims.max(0).values.mean() + sims.max(1).values.mean()) / 2
+        )
+        predicted_sims.append(
+            torch.nn.functional.cosine_similarity(
+                embedding_1.unsqueeze(0), embedding_2.unsqueeze(0)
+            )
+        )
+        sims_words = eventy.util.cosine_similarity(
+            torch.stack(word_embeddings_1), torch.stack(word_embeddings_2)
+        )
+        sims_words.fill_diagonal_(0)
+        predicted_sims_words.append(
+            1 - (sims_words.max(0).values.mean() + sims_words.max(1).values.mean()) / 2
         )
         for dim, sim in data["similarities"].items():
             gold_sims[dim].append(sim)
     for dimension, sim_list in gold_sims.items():
+        corr_data = torch.stack(
+            [torch.tensor(sim_list), torch.tensor(predicted_sims_words)]
+        )
+        corr = torch.corrcoef(corr_data)
+        print(f"Correlation (word matrix) for {dimension} is {corr[0][1].item():.2f}")
+    for dimension, sim_list in gold_sims.items():
         corr_data = torch.stack([torch.tensor(sim_list), torch.tensor(predicted_sims)])
         corr = torch.corrcoef(corr_data)
         print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
+    for dimension, sim_list in gold_sims.items():
+        corr_data_matrix = torch.stack(
+            [torch.tensor(sim_list), torch.tensor(predicted_sims_matrix)]
+        )
+        corr_matrix = torch.corrcoef(corr_data_matrix)
+        print(
+            f"Correlation (matrix method) for {dimension} is {corr_matrix[0][1].item():.2f}"
+        )
 
 
 @app.command()
@@ -431,7 +498,7 @@ def similarity(
         ),
         batch_size=batch_size,
     )
-    chain_embeddings = {}
+    window_embeddings = {}
     i = 0
     for batch, ids in loader:
         prediction_system.model.eval()
@@ -447,64 +514,59 @@ def similarity(
             on_device_batch.iobject_embeddings,
         )
         for full_chain_id, embedding in zip(ids, model_output.embeddings):
-            chain_embeddings[full_chain_id] = chain_embeddings.get(
+            window_embeddings[full_chain_id] = window_embeddings.get(
                 full_chain_id, []
             ) + [embedding.detach().cpu()]
-            # if i % 100 == 0:
-            #     print(full_chain_id, embedding)
             i += 1
-    embeddings = defaultdict(lambda: defaultdict(list))
-    for full_chain_name, embeds in chain_embeddings.items():
-        doc_id, chain_id = full_chain_name.split("_")
-        embeddings[doc_id][chain_id].append(torch.stack(embeds))
-    predicted_sims = []
+    per_chain_embeddings = defaultdict(list)
+    for k, v in window_embeddings.items():
+        doc_id, chain_id = k.split("_")
+        per_chain_embeddings[doc_id].append(torch.stack(v).mean(0))
+    doc_embeddings = {
+        k: torch.stack(chain_embeddings).mean(0)
+        for k, chain_embeddings in per_chain_embeddings.items()
+    }
     all_similarities = defaultdict(list)
-    skipped = 0
-    total = 0
     for (doc_a, doc_b), similarities in dataset.similarities.items():
-        total += 1
-        if len(embeddings.get(doc_a, [])) == 0 or len(embeddings.get(doc_b, [])) == 0:
-            skipped += 1
-            continue
-        doc_a_embeddings = torch.stack(
-            [torch.stack(e).mean(0) for e in embeddings[doc_a].values()]
-        )
-        doc_b_embeddings = torch.stack(
-            [torch.stack(e).mean(0) for e in embeddings[doc_b].values()]
-        )
-        sims = eventy.util.cosine_similarity(doc_a_embeddings, doc_b_embeddings)
-        # sim = torch.nn.functional.cosine_similarity(doc_a_embedding.unsqueeze(0), doc_b_embedding.unsqueeze(0))
-        # if total == 1
-        #     print("Emb", embeddings[doc_a])
-        #     print(doc_a, doc_b)
-        #     # print(doc_a_embeddings, doc_b_embeddings)
-        # predicted_sims.append(sim.item())
-        sims.fill_diagonal_(0)
-        predicted_sims.append(
-            1 - (sims.max(0).values.mean() + sims.max(1).values.mean()) / 2
-        )
-        # Let's just take the middle embedding for now, buuut actually the first performed better in our initial test
-        # predicted_sims.append(
-        #     1
-        #     - torch.nn.functional.cosine_similarity(
-        #         doc_a_embeddings[len(doc_a_embeddings) // 2],
-        #         doc_b_embeddings[len(doc_b_embeddings) // 2],
-        #         dim=0,
-        #     )
-        # )
         for k, v in similarities.items():
             all_similarities[k].append(v)
-
-    print(
-        f"Skipped {skipped} documents out of {total} that's {skipped / total * 100:.2f}%"
-    )
+    predicted_sims = []
+    predicted_sims_matrix_match = []
+    default_emb = torch.zeros(300)
+    for (doc_a, doc_b), _ in dataset.similarities.items():
+        predicted_sims.append(
+            torch.nn.functional.cosine_similarity(
+                doc_embeddings.get(doc_a, default_emb).unsqueeze(0),
+                doc_embeddings.get(doc_b, default_emb).unsqueeze(0),
+            )
+        )
+        try:
+            sims = eventy.util.cosine_similarity(
+                torch.stack(per_chain_embeddings.get(doc_a, [default_emb])),
+                torch.stack(per_chain_embeddings.get(doc_b, [default_emb])),
+            )
+            mean = sims.max(0).values.mean() + sims.max(1).values.mean()
+            predicted_sims_matrix_match.append(mean)
+        except KeyError:
+            predicted_sims_matrix_match.append(torch.tensor(0.0))
+    # print(
+    #     f"Skipped {skipped} documents out of {total} that's {skipped / total * 100:.2f}%"
+    # )
     print([t for t in predicted_sims[:10]])
 
     for dimension, sim_list in all_similarities.items():
         corr = torch.corrcoef(
             torch.stack([torch.tensor(sim_list), torch.tensor(predicted_sims)])
         )
+        corr_matrix = torch.corrcoef(
+            torch.stack(
+                [torch.tensor(sim_list), torch.tensor(predicted_sims_matrix_match)]
+            )
+        )
         print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
+        print(
+            f"Matrix-based correlation for {dimension} is {corr_matrix[0][1].item():.2f}"
+        )
 
 
 @app.command()
@@ -527,20 +589,41 @@ def test(run_name: str, test_set: bool = False, quick_run: bool = False):
 
 
 @app.command()
-def get_stats(config_path: str = "config.yaml"):
-    config = EventPredictionSystem.load_config(Path(config_path))
-    counter = Counter()
-    total_length = 0
-    num_chains = 0
-    for line in open(config.dataset.train_split):
-        data = json.loads(line)
-        counter.update([len(data)])
-        total_length += len(data)
-        num_chains += 1
-    plt.bar(range(10), [counter.get(x, 0) for x in range(10)])
+def get_stats(
+    config_paths: List[str] = [
+        "visualization_configs/config_de.yaml",
+        "visualization_configs/config_en.yaml",
+    ],
+    names: List[str] = ["German", "English-NYT"],
+):
+    offset = -0.1
+    for config_path, name in zip(config_paths, names):
+        config = EventPredictionSystem.load_config(Path(config_path))
+        counter = Counter()
+        total_length = 0
+        num_chains = 0
+        for line in open(config.dataset.train_split):
+            data = json.loads(line)
+            if not isinstance(data, list):
+                data = data.get("chain", [])
+            if len(data) > 2:
+                counter.update([len(data)])
+                total_length += len(data)
+                num_chains += 1
+            if num_chains > 1000:
+                break
+        normalized_counter = {k: v / sum(counter.values()) for k, v in counter.items()}
+        print(f"Total number of chains in {name}: {num_chains}")
+        print(f"Mean chain length in {name}: {total_length / num_chains:.2f}")
+        plt.bar(
+            [x + offset for x in range(3, 10)],
+            [normalized_counter.get(x, 0) for x in range(3, 10)],
+            0.4,
+            label=name,
+        )
+        offset += 0.2
+    plt.legend()
     plt.savefig("chain_lengths.pdf")
-    print(f"Total number of chains: {num_chains}")
-    print(f"Mean chain length: {total_length / num_chains:.2f}")
 
 
 def get_dataset(
@@ -552,6 +635,7 @@ def get_dataset(
     size_limit: Optional[int] = None,
     splits: List[str] = ["train", "validation"],
     debug_log: bool = True,
+    shuffle_chains: bool = False,
 ):
     loaders = {}
     for split in splits:
@@ -564,6 +648,7 @@ def get_dataset(
             fast_text=ft,
             min_chain_len=None if split == "train" else 8,
             size_limit=size_limit,
+            shuffle_chains=shuffle_chains,
         )
         if split == "train" and debug_log:
             print("Labels", dataset.get_label_counts())
@@ -581,8 +666,82 @@ def get_dataset(
             collate_fn=lambda chains: ChainBatch.from_chains(chains, ft),
             batch_size=batch_size,
             sampler=sampler,
+            num_workers=6,
         )
     return loaders
+
+
+@app.command()
+def interactive_chains(run_name: str):
+    prediction_system = EventPredictionSystem(
+        config_path=Path("logs") / run_name / "config.yaml",
+        quick_run=True,
+        splits=["train"],
+        log=False,
+    )
+    state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
+    prediction_system.model.load_state_dict(state_dict)
+    input_text = ""
+    while True:
+        input_chain, input_text = interactive.read_editor_input(input_text)
+        choices = []
+        events = []
+        window_size = 7
+        vocab_set = set(prediction_system.vocabulary) | set(["_"])
+        for triple in input_chain:
+            subjs, verb, objs = triple
+            if isinstance(verb, list):
+                choices = verb
+                verb = "_"
+            events.append(
+                Event(
+                    subjects=subjs,
+                    lemma=verb,
+                    objects=objs,
+                    iobjs=None,
+                    subject_names=subjs,
+                    object_names=objs,
+                )
+            )
+        chain = EventWindowDataset.add_edge_markers(events, window_size - 1)
+        windows = get_windows(chain, window_size, vocab_set)
+
+        model_chains = []
+        for window in windows:
+            to_mask = [i for i, e in enumerate(window) if e.lemma == "_"][0]
+            if to_mask == (window_size // 2):
+                new_chain = Chain.from_events(
+                    windows[0],
+                    prediction_system.ft,
+                    to_mask,
+                    prediction_system.vocabulary,
+                )
+                model_chains.append(new_chain)
+        batch = ChainBatch.from_chains(model_chains, prediction_system.ft).to("cuda:0")
+        for _ in range(3):
+            model_output = prediction_system.model(
+                batch.embeddings,
+                batch.subject_hot_encodings,
+                batch.object_hot_encodings,
+                batch.labels,
+                batch.label_embeddings,
+                batch.object_embeddings,
+                batch.subject_embeddings,
+                batch.iobject_embeddings,
+            )
+            if len(choices) == 0:
+                top_k = model_output.logits.topk(5)
+                print([prediction_system.vocabulary[k] for k in top_k.indices[0]])
+            else:
+                indices = [prediction_system.vocabulary.index(v) for v in choices]
+                choices_with_score = zip(
+                    [model_output.logits[0][i].item() for i in indices], choices
+                )
+                sorted_choices_with_score = list(
+                    sorted(choices_with_score, key=lambda pair: pair[0], reverse=True)
+                )
+                print(sorted_choices_with_score)
+        input("Press enter to edit text again")
 
 
 if __name__ == "__main__":

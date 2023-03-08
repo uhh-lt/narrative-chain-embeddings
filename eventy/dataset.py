@@ -50,6 +50,9 @@ class Event:
         )
         return event
 
+    def __repr__(self):
+        return f"Event<{self.lemma}>"
+
 
 @dataclass
 class Chain:
@@ -64,7 +67,6 @@ class Chain:
     object_embeddings: List[np.array]
     iobject_embeddings: List[str]
     iobject_names: List[str]
-    masked: int
 
     def __init__(
         self,
@@ -88,9 +90,81 @@ class Chain:
         self.object_names = object_names
         self.subject_embeddings = subject_embeddings
         self.object_embeddings = object_embeddings
-        self.label = vocabulary.index(self.lemmas[len(self.lemmas) // 2])
+        try:
+            self.label = vocabulary.index(self.lemmas[len(self.lemmas) // 2])
+        except ValueError:
+            print("Warning unknown lemma, setting label to 0")
+            self.label = 0
         self.iobject_embeddings = iobject_embeddings
         self.iobject_names = iobject_names
+
+    @classmethod
+    def from_events(
+        cls,
+        chain,
+        ft,
+        to_mask_index,
+        vocabulary,
+        zeros=torch.zeros(300, dtype=torch.float),
+    ):
+        new_chain = cls(
+            lemmas=[event.lemma for event in chain],
+            embeddings=[
+                ft.get_word_vector(event.lemma) if i != to_mask_index else zeros
+                for i, event in enumerate(chain)
+            ],
+            subject_hot_encodings=[
+                character_list_to_hot_encoding(event.subjects) for event in chain
+            ],
+            object_hot_encodings=[
+                character_list_to_hot_encoding(event.objects) for event in chain
+            ],
+            vocabulary=vocabulary,
+            subject_names=[c.subject_names for c in chain],
+            object_names=[c.object_names for c in chain],
+            subject_embeddings=[
+                torch.mean(
+                    torch.stack(
+                        [ft.get_word_vector(subj) for subj in event.subject_names]
+                        or [zeros]
+                    ),
+                    0,
+                )
+                if i != to_mask_index
+                else zeros
+                for i, event in enumerate(chain)
+            ],
+            object_embeddings=[
+                torch.mean(
+                    torch.stack(
+                        [ft.get_word_vector(subj) for subj in event.object_names]
+                        or [zeros]
+                    ),
+                    0,
+                )
+                if i != to_mask_index
+                else zeros
+                for i, event in enumerate(chain)
+            ],
+            iobject_names=[
+                " ".join(event.iobjs)
+                if event.iobjs is not None and len(event.iobjs) > 0
+                else None
+                for event in chain
+            ],
+            iobject_embeddings=[
+                torch.mean(
+                    torch.stack(
+                        [ft.get_word_vector(subj) for subj in event.iobjs] or [zeros]
+                    ),
+                    0,
+                )
+                if event.iobjs is not None and len(event.iobjs) > 0
+                else zeros
+                for event in chain
+            ],
+        )
+        return new_chain
 
     def get_central_lemma(self) -> str:
         if len(self.lemmas) % 2 != 1:
@@ -194,7 +268,9 @@ def get_windows(events: List[Event], window_size: int, vocabulary: List[str]):
     return windows
 
 
-def _get_windows(events: List[List[Event]], window_size: int, vocabulary: List[str]):
+def _get_windows(
+    events: List[List[Event]], window_size: int, vocabulary: List[str], all_windows=True
+):
     new_sublists = []
     windows = []
     for sublist in events:
@@ -209,9 +285,8 @@ def _get_windows(events: List[List[Event]], window_size: int, vocabulary: List[s
                         ]
                     )
                 )
-                new_sublists.append(sublist[: offset - (window_size // 2)])
-                new_sublists.append(sublist[offset + (window_size // 2) :])
-                break
+                # new_sublists.append(sublist[: offset - (window_size // 2)])
+                # new_sublists.append(sublist[offset + (window_size // 2) :])
         # If we don't find anything we just discard the sublist
     return windows, new_sublists
 
@@ -250,6 +325,8 @@ class EventWindowDataset(Dataset):
         fast_text: Optional[fasttext.FastText._FastText] = None,
         size_limit: Optional[int] = None,
         min_chain_len: Optional[int] = None,
+        cache_chains: bool = False,
+        shuffle_chains: bool = False,
         **kwargs,
     ):
         self.ft = fast_text
@@ -260,6 +337,7 @@ class EventWindowDataset(Dataset):
         self.vocab_set = set(vocabulary)
         self.window_size = window_size
         self.over_sampled = over_sampling
+        self.zeros = torch.zeros(300, dtype=torch.float)
         for i, line in tqdm(enumerate(in_file), desc="Reading JSON-dataset"):
             data = json.loads(line)
             chain = [
@@ -267,12 +345,12 @@ class EventWindowDataset(Dataset):
                 for e in (data["chain"] if isinstance(data, dict) else data)
                 if e["verb_lemma"] in self.vocabulary
             ]
+            if shuffle_chains:
+                random.shuffle(chain)
             if min_chain_len is not None and len(chain) < min_chain_len:
                 continue
             if edge_markers:
-                chain = EventWindowDataset.add_edge_markers(
-                    chain, self.window_size // 2
-                )
+                chain = EventWindowDataset.add_edge_markers(chain, self.window_size - 1)
             windows = get_windows(chain, self.window_size, self.vocab_set)
             for window in windows:
                 assert len(window) == self.window_size
@@ -311,7 +389,10 @@ class EventWindowDataset(Dataset):
                 #     balanced_counter.update([chain[window_size // 2].lemma])
             random.shuffle(balanced_chains)
             self.chains = balanced_chains
-        self.chain_cache = [None for _ in self.chains]
+        if cache_chains:
+            self.chain_cache = [None for _ in self.chains]
+        else:
+            self.chain_cache = None
         super().__init__(*args, **kwargs)
 
     def performance_test(self):
@@ -367,75 +448,24 @@ class EventWindowDataset(Dataset):
     def __getitem__(self, n):
         chain = self.chains[n]
         to_mask_index = self.window_size // 2
-        if self.chain_cache[n] is not None:
+        if self.chain_cache and self.chain_cache[n] is not None:
             return self.chain_cache[n]
-        self.chain_cache[n] = Chain(
-            lemmas=[event.lemma for event in chain],
-            embeddings=[
-                self.ft.get_word_vector(event.lemma)
-                if i != to_mask_index
-                else torch.zeros(300, dtype=torch.float)
-                for i, event in enumerate(chain)
-            ],
-            subject_hot_encodings=[
-                character_list_to_hot_encoding(event.subjects) for event in chain
-            ],
-            object_hot_encodings=[
-                character_list_to_hot_encoding(event.objects) for event in chain
-            ],
-            vocabulary=self.vocabulary,
-            subject_names=[c.subject_names for c in chain],
-            object_names=[c.object_names for c in chain],
-            subject_embeddings=[
-                torch.mean(
-                    torch.stack(
-                        [self.ft.get_word_vector(subj) for subj in event.subject_names]
-                        or [torch.zeros(300)]
-                    ),
-                    0,
-                )
-                if i != to_mask_index
-                else torch.zeros(300, dtype=torch.float32)
-                for i, event in enumerate(chain)
-            ],
-            object_embeddings=[
-                torch.mean(
-                    torch.stack(
-                        [self.ft.get_word_vector(subj) for subj in event.subject_names]
-                        or [torch.zeros(300)]
-                    ),
-                    0,
-                )
-                if i != to_mask_index
-                else torch.zeros(300, dtype=torch.float32)
-                for i, event in enumerate(chain)
-            ],
-            iobject_names=[
-                " ".join(event.iobjs)
-                if event.iobjs is not None and len(event.iobjs) > 0
-                else None
-                for event in chain
-            ],
-            iobject_embeddings=[
-                torch.mean(
-                    torch.stack(
-                        [self.ft.get_word_vector(subj) for subj in event.iobjs]
-                        or [torch.zeros(300)]
-                    ),
-                    0,
-                )
-                if event.iobjs is not None and len(event.iobjs) > 0
-                else torch.zeros(300)
-                for event in chain
-            ],
-        )
-        return self.chain_cache[n]
+        new_chain = Chain.from_events(chain, self.ft, to_mask_index, self.vocabulary)
+        if self.chain_cache:
+            self.chain_cache[n]
+        return new_chain
 
     def get_label_counts(self):
         if self.label_counter is None:
             self.label_counter = Counter()
             self.label_counter.update(
-                tqdm((chain.label for chain in self), desc="Counting label frequencies")
+                tqdm(
+                    (
+                        self.vocabulary.index(chain[len(chain) // 2].lemma)
+                        for chain in self.chains
+                    ),
+                    desc="Counting label frequencies",
+                )
             )
         return {self.vocabulary[k]: count for k, count in self.label_counter.items()}
 
@@ -460,6 +490,9 @@ class SimilarityDataset(EventWindowDataset):
         over_sampling: bool = False,
         edge_markers: bool = False,
         fast_text: Optional[fasttext.FastText._FastText] = None,
+        min_length: int = 3,
+        shuffle_chains: bool = False,
+        remove_entities: bool = False,
         **kwargs,
     ):
         self.ft = fast_text
@@ -472,7 +505,7 @@ class SimilarityDataset(EventWindowDataset):
         self.doc_ids = []
         self.chain_ids = []
         self.doc_id_positions = {}
-        for i, line in enumerate(in_file):
+        for line in in_file:
             data = json.loads(line)
             if len(data["chains_1"]) == 0 or len(data["chains_2"]) == 0:
                 continue
@@ -480,8 +513,26 @@ class SimilarityDataset(EventWindowDataset):
             for (chains_data, doc_id) in zip(
                 [data["chains_1"], data["chains_2"]], local_doc_ids
             ):
-                for i, chain_data in enumerate(chains_data):
+                i = 0
+                for chain_data in chains_data:
                     chain = [Event.from_json(e) for e in chain_data]
+                    if shuffle_chains:
+                        random.shuffle(chain)
+                    if remove_entities:
+                        new_chain = []
+                        for e in chain:
+                            event = Event(
+                                lemma=e.lemma,
+                                objects=[],
+                                subjects=[],
+                                iobjs=e.iobjs,
+                                subject_names=[],
+                                object_names=[],
+                            )
+                            new_chain.append(event)
+                        chain = new_chain
+                    # if len(chain) < 3:
+                    #     continue
                     if edge_markers:
                         chain = EventWindowDataset.add_edge_markers(
                             chain, self.window_size // 2
@@ -495,7 +546,11 @@ class SimilarityDataset(EventWindowDataset):
                     self.doc_id_positions[doc_id] = self.doc_id_positions.get(
                         doc_id, []
                     ) + list(range(len(self.chains) - len(windows), len(self.chains)))
-            self.similarities[tuple(local_doc_ids)] = data["similarities"]
+                    i += 1
+            # We invert them to be actual similarity values as 4 is "very dissimilar" in the orignal data
+            self.similarities[tuple(local_doc_ids)] = {
+                k: 4 - v for k, v in data["similarities"].items()
+            }
         self.chain_cache = [None for _ in self.chains]
 
     def __getitem__(self, n):

@@ -23,6 +23,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
+import random
 from typing import Callable, Optional
 
 import pandas as pd
@@ -70,6 +71,7 @@ class DynamicImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         weights = 1.0 / label_to_count[df["label"]]
 
         self.weights = torch.DoubleTensor(weights.to_list())
+        self.sampling_schedule = sampling_schedule
         self.current_weights = (
             self.weights
             if sampling_schedule == SamplingSchedule.BALANCED_TO_REAL
@@ -109,12 +111,15 @@ class DynamicImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
             raise ValueError("Invalid sampling schedule")
 
     def __iter__(self):
-        samples = (
-            self.indices[i]
-            for i in torch.multinomial(
-                self.current_weights, self.num_samples, replacement=True
+        if self.sampling_schedule == SamplingSchedule.REAL:
+            samples = (random.choice(self.indices) for i in range(self.num_samples))
+        else:
+            samples = (
+                self.indices[i]
+                for i in torch.multinomial(
+                    self.current_weights, self.num_samples, replacement=True
+                )
             )
-        )
         self._update()
         return samples
 
