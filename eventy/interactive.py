@@ -78,13 +78,25 @@ lark_parser = Lark(GRAMMAR)
 
 def read_editor_input(prefilled: str):
     text_file = tempfile.NamedTemporaryFile("wt")
+    text_file = tempfile.NamedTemporaryFile("wt")
+    temp_dir_manager = tempfile.TemporaryDirectory()
     text_file.write(prefilled)
     text_file.flush()
-    ret = subprocess.run(
-        ["vim", text_file.name], stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr
-    )
-    text = "".join(open(text_file.name).readlines())
-    return list(get_triples(text)), text
+    with temp_dir_manager as temp_dir:
+        while True:
+            args = [
+                "vim",
+                "-c",
+                f"set undodir={temp_dir}",
+                "-c",
+                "set undofile",
+                text_file.name,
+            ]
+            ret = subprocess.run(
+                args, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr
+            )
+            text = "".join(open(text_file.name).readlines())
+            yield list(get_triples(text)), text
 
 
 if __name__ == "__main__":

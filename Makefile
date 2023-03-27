@@ -1,4 +1,4 @@
-export TOP_LEVEL_PYTHON_FILES=main.py
+export TOP_LEVEL_PYTHON_FILES=main.py t5_data.py
 export SRC_DIR="eventy"
 
 format:

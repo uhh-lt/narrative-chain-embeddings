@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 from collections import Counter, defaultdict
+from csv import DictWriter
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -467,9 +468,12 @@ def fasttext_embedding_baseline(
 @app.command()
 def similarity(
     run_name: str,
+    out_file: str,
     quick_run: bool = False,
     batch_size: int = 256,
     device: str = "cuda:0",
+    shuffle_chains: bool = False,
+    remove_entities: bool = False,
 ):
     prediction_system = EventPredictionSystem(
         config_path=Path("logs") / run_name / "config.yaml",
@@ -489,6 +493,8 @@ def similarity(
             prediction_system.config.dataset.vocabulary_file,
             prediction_system.config.dataset.min_count,
         ),
+        shuffle_chains=shuffle_chains,
+        remove_entities=remove_entities,
     )
     loader = DataLoader(
         dataset,
@@ -554,6 +560,21 @@ def similarity(
     # )
     print([t for t in predicted_sims[:10]])
 
+    writer = DictWriter(
+        open(out_file, "w"),
+        fieldnames=[
+            "strategy",
+            "geography",
+            "entities",
+            "time",
+            "narrative",
+            "overall",
+            "style",
+            "tone",
+        ],
+    )
+    correlations = defaultdict(dict)
+    writer.writeheader()
     for dimension, sim_list in all_similarities.items():
         corr = torch.corrcoef(
             torch.stack([torch.tensor(sim_list), torch.tensor(predicted_sims)])
@@ -563,10 +584,15 @@ def similarity(
                 [torch.tensor(sim_list), torch.tensor(predicted_sims_matrix_match)]
             )
         )
+        correlations["matrix"][dimension] = f"{corr_matrix[0][1].item():.3f}"
+        correlations["plain"][dimension] = f"{corr[0][1].item():.3f}"
         print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
         print(
             f"Matrix-based correlation for {dimension} is {corr_matrix[0][1].item():.2f}"
         )
+    for dim, data in correlations.items():
+        data.update({"strategy": dim})
+        writer.writerow(data)
 
 
 @app.command()
@@ -681,9 +707,14 @@ def interactive_chains(run_name: str):
     )
     state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
     prediction_system.model.load_state_dict(state_dict)
-    input_text = ""
+    input_text = """(A, search, B)
+(A, arrest, B)
+(B, [find, call, help, die, grow, plead], C)
+(D, sentence, B)"""
+    prediction_system.model.eval()
+    input_chains = interactive.read_editor_input(input_text)
     while True:
-        input_chain, input_text = interactive.read_editor_input(input_text)
+        input_chain, input_text = next(input_chains)
         choices = []
         events = []
         window_size = 7
@@ -708,7 +739,10 @@ def interactive_chains(run_name: str):
 
         model_chains = []
         for window in windows:
-            to_mask = [i for i, e in enumerate(window) if e.lemma == "_"][0]
+            try:
+                to_mask = [i for i, e in enumerate(window) if e.lemma == "_"][0]
+            except IndexError:
+                continue
             if to_mask == (window_size // 2):
                 new_chain = Chain.from_events(
                     windows[0],
@@ -717,30 +751,36 @@ def interactive_chains(run_name: str):
                     prediction_system.vocabulary,
                 )
                 model_chains.append(new_chain)
-        batch = ChainBatch.from_chains(model_chains, prediction_system.ft).to("cuda:0")
-        for _ in range(3):
-            model_output = prediction_system.model(
-                batch.embeddings,
-                batch.subject_hot_encodings,
-                batch.object_hot_encodings,
-                batch.labels,
-                batch.label_embeddings,
-                batch.object_embeddings,
-                batch.subject_embeddings,
-                batch.iobject_embeddings,
+        print("Window:", window)
+        try:
+            batch = ChainBatch.from_chains(model_chains, prediction_system.ft).to(
+                "cuda:0"
             )
-            if len(choices) == 0:
-                top_k = model_output.logits.topk(5)
-                print([prediction_system.vocabulary[k] for k in top_k.indices[0]])
-            else:
-                indices = [prediction_system.vocabulary.index(v) for v in choices]
-                choices_with_score = zip(
-                    [model_output.logits[0][i].item() for i in indices], choices
-                )
-                sorted_choices_with_score = list(
-                    sorted(choices_with_score, key=lambda pair: pair[0], reverse=True)
-                )
-                print(sorted_choices_with_score)
+        except ValueError as e:
+            print("Error", e)
+            continue
+        model_output = prediction_system.model(
+            batch.embeddings,
+            batch.subject_hot_encodings,
+            batch.object_hot_encodings,
+            batch.labels,
+            batch.label_embeddings,
+            batch.object_embeddings,
+            batch.subject_embeddings,
+            batch.iobject_embeddings,
+        )
+        if len(choices) == 0:
+            top_k = model_output.logits.topk(5)
+            print([prediction_system.vocabulary[k] for k in top_k.indices[0]])
+        else:
+            indices = [prediction_system.vocabulary.index(v) for v in choices]
+            choices_with_score = zip(
+                [model_output.logits[0][i].item() for i in indices], choices
+            )
+            sorted_choices_with_score = list(
+                sorted(choices_with_score, key=lambda pair: pair[0], reverse=True)
+            )
+            print(sorted_choices_with_score)
         input("Press enter to edit text again")
 
 
