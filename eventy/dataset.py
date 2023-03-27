@@ -18,6 +18,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from eventy import util
+
 PREDICTABLE_LEMMAS = ["schlagen", "warten", "laufen", "gehen"]
 
 
@@ -49,6 +51,20 @@ class Event:
             ),
         )
         return event
+
+    def to_text(self, include_iobj=False, include_names=False):
+        objects = util.token_list(self.objects or [])
+        subjects = util.token_list(self.subjects or [])
+        objects_with_names_list = [
+            a + ": " + f"'{b}'" for a, b in zip(self.objects, self.object_names)
+        ]
+        subjects_with_names_list = [
+            a + ": " + f"'{b}'" for a, b in zip(self.subjects, self.subject_names)
+        ]
+        objects_with_names = util.token_list(objects_with_names_list or [])
+        subjects_with_names = util.token_list(subjects_with_names_list or [])
+        iobjs = util.token_list(self.iobjs or [])
+        return f"({subjects if not include_names else subjects_with_names}, {self.lemma}, {iobjs + ', ' if include_iobj else ''} {objects if not include_names else objects_with_names})"
 
     def __repr__(self):
         return f"Event<{self.lemma}>"
