@@ -100,17 +100,19 @@ def mcnc_event_seq_prob(
     input_texts = ["".join(before_events) + (masked_event.to_text(**to_text_config) if only_verbs else mask_str) + "".join(after_events)]
     if not only_verbs:
         input_texts *= 5
-    if not only_verbs:
-        targets = ["<extra_id_0>" + chain[mask].to_text(**to_text_config) + "<extra_id_1>"]
-    else:
+    if only_verbs:
         targets = ["<extra_id_0>" + original_lemma + "<extra_id_1>"]
+    else:
+        targets = ["<extra_id_0>" + chain[mask].to_text(**to_text_config) + "<extra_id_1>"]
     candidates = random.choices(all_events, k=4)
     for event in candidates:
         if only_verbs:
             random_lemma = random.choice(all_events).lemma
             new_event = Event(**with_original_lemma, lemma=random_lemma)
             input_texts.append("".join(before_events) + new_event.to_text(**to_text_config) + "".join(after_events))
-        targets.append("<extra_id_0>" + event.to_text(**to_text_config) + "<extra_id_1>")
+            targets.append("<extra_id_0>" + event.lemma + "<extra_id_1>")
+        else:
+            targets.append("<extra_id_0>" + event.to_text(**to_text_config) + "<extra_id_1>")
     probs = sequence_probabilities(model, tokenizer, input_texts, targets)
     return probs.argmax() == 0
 
