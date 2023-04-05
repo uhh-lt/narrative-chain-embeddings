@@ -672,7 +672,7 @@ def get_dataset(
             over_sampling=False,
             edge_markers=dataset_config.edge_markers if split == "train" else False,
             fast_text=ft,
-            min_chain_len=None if split == "train" else 8,
+            min_chain_len=None if split == "train" else 9,
             size_limit=size_limit,
             shuffle_chains=shuffle_chains,
         )
