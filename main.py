@@ -201,7 +201,7 @@ class EventPredictionSystem:
 
     def train(self):
         early_stopper = LoggingEarlyStopper(
-            patience=10,
+            patience=5,
             metric_key="5_choice_accuracy01",
             minimize=False,
             loader_key="validation",

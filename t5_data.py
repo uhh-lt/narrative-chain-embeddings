@@ -73,6 +73,7 @@ def main(
     out_path: str,
     exclude_stop_events: bool = False,
     include_surface_forms: bool = True,
+    min_length: Optional[int] = None,
 ):
     out_file = gzip.open(out_path, "wt")
     text_config = dict(include_iobj=True, include_names=include_surface_forms)
@@ -84,7 +85,9 @@ def main(
             for e in chain
             if not exclude_stop_events or e.lemma not in STOP_EVENTS
         ]
-        if len(chain_texts) > 0:
+        if len(chain_texts) > 0 and (
+            min_length is None or len(chain_texts) >= min_length
+        ):
             out_file.write("".join(chain_texts) + "\n")
 
 
@@ -117,8 +120,8 @@ def mcnc_event_seq_prob(
     only_verbs: bool = False,
     mask_str: str = "<extra_token_0>",
     verbose: bool = False,
+    to_text_config={"include_iobj": True, "include_names": True},
 ):
-    to_text_config = {"include_iobj": True, "include_names": True}
     if mask is None:
         mask = random.randint(0, len(chain) - 1)
     if only_verbs:
@@ -174,6 +177,8 @@ def test(
     test_dataset_path: str,
     min_chain_length: Optional[int] = None,
     only_verbs: bool = False,
+    filter_stop_events: bool = False,
+    include_names: bool = True,
 ):
     model = AutoModelWithLMHead.from_pretrained(model_path).to("cuda:0")
     model.eval()
@@ -182,26 +187,48 @@ def test(
     all_verbs = list()
     correct = 0
     total = 0
+    to_text_config = {"include_iobj": True, "include_names": include_names}
     for i, line in enumerate(tqdm(open(train_dataset_path, "r"))):
         data = json.loads(line)
-        events = [Event.from_json(event) for event in data["chain"]]
+        events = [
+            Event.from_json(event)
+            for event in data["chain"]
+            if (not filter_stop_events or event["verb_lemma"] not in STOP_EVENTS)
+        ]
+        if len(events) == 0:
+            continue
         all_events.extend(events)
         all_verbs.extend([e.lemma for e in events])
-    lines = open(test_dataset_path, "r").readlines()  # 750 * 10000)
+        # if i > 10000:
+        #     break
+    lines = open(test_dataset_path, "rt").readlines()  # 750 * 10000)
     print("Num lines", len(lines))
     pbar = tqdm(enumerate(lines))
     for i, line in pbar:
         data = json.loads(line)
-        elements = [Event.from_json(event) for event in data["chain"]]
+        elements = [
+            Event.from_json(event)
+            for event in data["chain"]
+            if (not filter_stop_events or event["verb_lemma"] not in STOP_EVENTS)
+        ]
+        if len(elements) == 0:
+            continue
         if min_chain_length is not None and len(elements) < min_chain_length:
             continue
         total += 1
         if only_verbs:
             is_correct = mcnc_event_seq_prob(
-                model, tokenizer, elements, all_events, only_verbs=True
+                model,
+                tokenizer,
+                elements,
+                all_events,
+                only_verbs=True,
+                to_text_config=to_text_config,
             )
         else:
-            is_correct = mcnc_event_seq_prob(model, tokenizer, elements, all_events)
+            is_correct = mcnc_event_seq_prob(
+                model, tokenizer, elements, all_events, to_text_config=to_text_config
+            )
         if is_correct == True:
             correct += 1
         pbar.set_postfix({"accuracy": correct / total})

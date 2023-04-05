@@ -9,3 +9,17 @@ def cosine_similarity(a: torch.Tensor, b: torch.Tensor):
 
 def token_list(tokens) -> str:
     return "[" + ", ".join(tokens) + "]"
+
+
+def matrix_based_similarity(embeddings_a, embeddings_b):
+    """
+    SBert style row and column based max similarities.
+
+    This solves an assignment problem of sorts.
+    """
+    sims = cosine_similarity(
+        embeddings_a,
+        embeddings_b,
+    )
+    mean = sims.max(0).values.mean() + sims.max(1).values.mean()
+    return mean
