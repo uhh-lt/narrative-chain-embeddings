@@ -35,7 +35,9 @@ class Event:
     @classmethod
     def from_json(cls, data: Dict) -> "Event":
         iobjs = (
-            tuple(o for o in (data["iobject"] or {}).values() or [] if o is not None)
+            tuple(
+                o for o in (data.get("iobject") or {}).values() or [] if o is not None
+            )
             or None
         )
         event = Event(
@@ -44,10 +46,10 @@ class Event:
             subjects=tuple(data["subjects"]),
             iobjs=iobjs,
             subject_names=tuple(
-                e for e in data.get("subject_names") if isinstance(e, str)
+                e for e in data.get("subject_names", []) if isinstance(e, str)
             ),
             object_names=tuple(
-                e for e in data.get("object_names") if isinstance(e, str)
+                e for e in data.get("object_names", []) if isinstance(e, str)
             ),
         )
         return event
