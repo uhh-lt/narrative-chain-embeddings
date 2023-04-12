@@ -127,7 +127,7 @@ class EventPredictionSystem:
         self.vocabulary = build_vocabulary(
             self.config.dataset.vocabulary_file,
             self.config.dataset.min_count,
-            config.dataset.lang,
+            self.config.dataset.lang,
         )
         self.loaders = loaders or get_dataset(
             self.vocabulary,
