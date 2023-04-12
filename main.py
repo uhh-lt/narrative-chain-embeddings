@@ -636,9 +636,14 @@ def get_stats(
         "visualization_configs/config_en.yaml",
     ],
     names: List[str] = ["German", "English-NYT"],
+    lower_bound: int = 3,
 ):
     offset = -0.1
-    for config_path, name in zip(config_paths, names):
+    colors = plt.cm.Set1(range(2))
+    upper_bound = 10
+    out_csv = open("chain_lengths.csv", "w")
+    counts = []
+    for config_path, name, color in zip(config_paths, names, colors):
         config = EventPredictionSystem.load_config(Path(config_path))
         counter = Counter()
         total_length = 0
@@ -647,22 +652,31 @@ def get_stats(
             data = json.loads(line)
             if not isinstance(data, list):
                 data = data.get("chain", [])
-            if len(data) > 2:
+            if len(data) >= lower_bound:
                 counter.update([len(data)])
                 total_length += len(data)
                 num_chains += 1
-            if num_chains > 1000:
-                break
+            # if num_chains > 1000:
+            #     break
         normalized_counter = {k: v / sum(counter.values()) for k, v in counter.items()}
         print(f"Total number of chains in {name}: {num_chains}")
         print(f"Mean chain length in {name}: {total_length / num_chains:.2f}")
         plt.bar(
-            [x + offset for x in range(3, 10)],
-            [normalized_counter.get(x, 0) for x in range(3, 10)],
+            [x + offset for x in range(lower_bound, upper_bound)],
+            [normalized_counter.get(x, 0) for x in range(lower_bound, upper_bound)],
             0.4,
             label=name,
+            color=color,
+        )
+        counts.append(
+            [name]
+            + [normalized_counter.get(x, 0) for x in range(lower_bound, upper_bound)]
         )
         offset += 0.2
+        plt.ylabel("Relative frequency")
+        plt.ylabel("Chain length")
+    for line in zip(["dataset"] + list(range(lower_bound, upper_bound)), *counts):
+        out_csv.write(",".join([str(e) for e in line]) + "\n")
     plt.legend()
     plt.savefig("chain_lengths.pdf")
 
