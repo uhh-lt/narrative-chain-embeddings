@@ -39,6 +39,7 @@ class DatasetConfig(BaseSettings):
     sampling_schedule: SamplingSchedule
     vocabulary_file: str
     min_count: int
+    lang: str = "en"
 
 
 class LossKind(str, Enum):

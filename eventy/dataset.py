@@ -345,6 +345,7 @@ class EventWindowDataset(Dataset):
         min_chain_len: Optional[int] = None,
         cache_chains: bool = False,
         shuffle_chains: bool = False,
+        deduplicate: bool = True,
         **kwargs,
     ):
         self.ft = fast_text
@@ -355,6 +356,7 @@ class EventWindowDataset(Dataset):
         self.vocab_set = set(vocabulary)
         self.window_size = window_size
         self.over_sampled = over_sampling
+        self.mask_random = mask_random
         self.zeros = torch.zeros(300, dtype=torch.float)
         for i, line in tqdm(enumerate(in_file), desc="Reading JSON-dataset"):
             data = json.loads(line)
@@ -377,7 +379,8 @@ class EventWindowDataset(Dataset):
             self.chains.extend(windows)
             if size_limit and size_limit <= i:
                 break
-        self.chains = list(set(tqdm(self.chains, desc="Deduplicating dataset")))
+        if deduplicate:
+            self.chains = list(set(tqdm(self.chains, desc="Deduplicating dataset")))
         print("Number of unique chains: ", len(self.chains))
         if self.over_sampled:
             lemma_counter = Counter()

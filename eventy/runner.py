@@ -26,8 +26,10 @@ class CustomRunner(dl.Runner):
             on_device_batch.subject_hot_encodings,
             on_device_batch.object_hot_encodings,
             on_device_batch.labels,
+            on_device_batch.label_embeddings,
             on_device_batch.object_embeddings,
             on_device_batch.subject_embeddings,
+            on_device_batch.iobject_embeddings,
         )
 
     def on_loader_start(self, runner):

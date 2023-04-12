@@ -65,15 +65,28 @@ STOP_EVENTS = [
     "go",
 ]
 
+DE_STOP_EVENTS = [
+    "sagen",
+    "haben",
+    "geben",
+    "kommen",
+    "machen",
+    "stehen",
+    "erklären",
+    "sehen",
+    "gehen",
+    "lassen",
+]
 
-def build_vocabulary(vocabulary_file, min_count):
+
+def build_vocabulary(vocabulary_file, min_count, lang="en"):
     vocabulary = []
     for line in open(vocabulary_file):
         count, lemma = line.strip().split(" ")
         if int(count) < min_count:
             break
         new_lemma = lemma[1:-1]
-        if new_lemma not in STOP_EVENTS:
+        if new_lemma not in [STOP_EVENTS if lang != "de" else DE_STOP_EVENTS]:
             vocabulary.append(lemma[1:-1])  #  Strip the quotes at start and end
     return vocabulary
 
@@ -90,6 +103,7 @@ class EventPredictionSystem:
         overrides: Dict[str, any] = {},
         loaders: Dict = None,
         shuffle_chains: bool = False,
+        deduplicate: bool = True,
     ):
         self.wandb_logger = None
         if log:
@@ -111,7 +125,9 @@ class EventPredictionSystem:
             self.config.device = device_override
         self.ft = self.get_embedder()
         self.vocabulary = build_vocabulary(
-            self.config.dataset.vocabulary_file, self.config.dataset.min_count
+            self.config.dataset.vocabulary_file,
+            self.config.dataset.min_count,
+            config.dataset.lang,
         )
         self.loaders = loaders or get_dataset(
             self.vocabulary,
@@ -122,10 +138,11 @@ class EventPredictionSystem:
             size_limit=100_000 if quick_run else None,
             splits=splits,
             shuffle_chains=shuffle_chains,
+            deduplicate=deduplicate,
         )
         if os.path.exists(
             cache_path := self.config.dataset.train_split
-            + f"min_conut={self.config.dataset.min_count}.cache"
+            + f"min_conut={self.config.dataset.min_count}_quick_run={quick_run}.cache"
         ):
             self.distribution = pickle.load(open(cache_path, "rb"))
         else:
@@ -608,6 +625,7 @@ def test(run_name: str, test_set: bool = False, quick_run: bool = False):
         quick_run=quick_run,
         splits=["train"] + (["test"] if test_set else ["validation"]),
         log=False,
+        deduplicate=False,
     )
     state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
     prediction_system.model.load_state_dict(state_dict)
@@ -662,6 +680,7 @@ def get_dataset(
     splits: List[str] = ["train", "validation"],
     debug_log: bool = True,
     shuffle_chains: bool = False,
+    deduplicate: bool = True,
 ):
     loaders = {}
     for split in splits:
@@ -675,6 +694,7 @@ def get_dataset(
             min_chain_len=None if split == "train" else 9,
             size_limit=size_limit,
             shuffle_chains=shuffle_chains,
+            deduplicate=deduplicate,
         )
         if split == "train" and debug_log:
             print("Labels", dataset.get_label_counts())
