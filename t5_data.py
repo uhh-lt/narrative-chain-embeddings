@@ -238,8 +238,8 @@ def test(
 
 
 @app.command()
-def similarity(model_path: str):
-    to_text_config = {"include_iobj": True, "include_names": True}
+def similarity(model_path: str, include_names: bool = True):
+    to_text_config = {"include_iobj": True, "include_names": include_names}
     model = T5EncoderModel.from_pretrained(model_path).to("cuda:0")
     model.eval()
     tokenizer = T5Tokenizer.from_pretrained(model_path)
