@@ -405,12 +405,13 @@ def fasttext_embedding_baseline(
         def get_word_vector(self, _lemma):
             return torch.rand(300, dtype=torch.float)
 
-    # embedder = FasttextWrapper(embedding_src)
-    embedder = RandomEmbedder()
+    embedder = FasttextWrapper(embedding_src)
+    # embedder = RandomEmbedder()
     gold_sims = defaultdict(list)
     predicted_sims = []
     predicted_sims_matrix = []
     predicted_sims_words = []
+    key = "verb_lemma"
     for line in open(json_path):
         data = json.loads(line)
         embeddings_1 = []
@@ -423,20 +424,16 @@ def fasttext_embedding_baseline(
         embedding_2 = torch.zeros(300, dtype=torch.float)
         for chain in data["chains_1"]:
             chain_embedding = torch.stack(
-                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
+                [embedder.get_word_vector(e[key]) for e in chain]
             ).mean(0)
-            word_embeddings_1.extend(
-                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
-            )
+            word_embeddings_1.extend([embedder.get_word_vector(e[key]) for e in chain])
             embeddings_1.append(chain_embedding)
             embedding_1 += chain_embedding
         for chain in data["chains_2"]:
             chain_embedding = torch.stack(
-                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
+                [embedder.get_word_vector(e[key]) for e in chain]
             ).mean(0)
-            word_embeddings_2.extend(
-                [embedder.get_word_vector(e["verb_lemma"]) for e in chain]
-            )
+            word_embeddings_2.extend([embedder.get_word_vector(e[key]) for e in chain])
             embeddings_2.append(chain_embedding)
             embedding_2 += chain_embedding
         embedding_1 /= len(embeddings_1)
