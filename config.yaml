@@ -1,8 +1,8 @@
-batch_size: 256
+batch_size: 12
 window_size: 7
 device: "cuda"
 epochs: 100
-learning_rate: 5e-3 # 3e-3 best, 2e-3 may be faster, 5e-3 is too much!
+learning_rate: 3e-3 # 3e-3 best, 2e-3 may be faster, 5e-3 is too much!
 # learning_rate: 3e-3 # 3e-3 best, 2e-3 may be faster, 5e-3 is too much!
 model:
   kind: "transformer"
@@ -15,18 +15,22 @@ embedding_source:
   kind: "fasttext"
   name: "cc.en.300.bin"
 dataset:
-  min_count: 500
-  edge_markers: true
+  min_count: 7
+  edge_markers: false
   # train_split: data/train_news.jsonlines
   # test_split: data/test_news.jsonlines
   # validation_split: data/dev_news.jsonlines
-  train_split: data/gigaword/tenth/train.jsonlines
-  test_split: data/gigaword/tenth/test.jsonlines
-  validation_split: data/gigaword/tenth/dev.jsonlines
-  vocabulary_file: "data/gigaword/top_lemmas.txt"
-  # train_split: data/train_news_sample.jsonlines
-  # test_split: data/test_news_sample.jsonlines
-  # validation_split: data/dev_news_sample.jsonlines
+  # train_split: data/gigaword/tenth/train.jsonlines
+  # test_split: data/gigaword/tenth/test.jsonlines
+  # validation_split: data/gigaword/tenth/dev.jsonlines
+  # train_split: data/gigaword/train.jsonlines
+  # test_split: data/gigaword/test.jsonlines
+  # validation_split: data/gigaword/dev.jsonlines
+  # vocabulary_file: "data/gigaword/top_lemmas.txt"
+  train_split: data/german_news/train_ompcc.jsonlines
+  test_split: data/german_news/test_ompcc.jsonlines
+  validation_split: data/german_news/dev_ompcc.jsonlines
+  vocabulary_file: "data/german_news/top_lemmas.txt"
   sampling_schedule: real
 loss:
   - euclidean
