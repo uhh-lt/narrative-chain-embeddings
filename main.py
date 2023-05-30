@@ -81,14 +81,17 @@ DE_STOP_EVENTS = [
 
 def build_vocabulary(vocabulary_file, min_count, lang="en"):
     vocabulary = []
+    counts = []
     for line in open(vocabulary_file):
         count, lemma = line.strip().split(" ")
         if int(count) < min_count:
             break
         new_lemma = lemma[1:-1]
-        if new_lemma not in [STOP_EVENTS if lang != "de" else DE_STOP_EVENTS]:
+        if new_lemma not in (STOP_EVENTS if lang != "de" else DE_STOP_EVENTS):
             vocabulary.append(lemma[1:-1])  #  Strip the quotes at start and end
-    return vocabulary
+            counts.append(int(count))
+    counts = torch.tensor(counts)
+    return vocabulary, counts / counts.sum()
 
 
 class EventPredictionSystem:
@@ -97,6 +100,7 @@ class EventPredictionSystem:
         config_path: Optional[str] = "config.yaml",
         run_name: Optional[str] = None,
         quick_run: bool = False,
+        reuse_weights: Optional[str] = None,
         splits: List[str] = ["train", "validation"],
         log: bool = True,
         device_override: Optional[str] = None,
@@ -124,7 +128,7 @@ class EventPredictionSystem:
         if device_override is not None:
             self.config.device = device_override
         self.ft = self.get_embedder()
-        self.vocabulary = build_vocabulary(
+        self.vocabulary, self.distribution = build_vocabulary(
             self.config.dataset.vocabulary_file,
             self.config.dataset.min_count,
             self.config.dataset.lang,
@@ -140,9 +144,12 @@ class EventPredictionSystem:
             shuffle_chains=shuffle_chains,
             deduplicate=deduplicate,
         )
-        if os.path.exists(
-            cache_path := self.config.dataset.train_split
-            + f"min_conut={self.config.dataset.min_count}_quick_run={quick_run}.cache"
+        if (
+            os.path.exists(
+                cache_path := self.config.dataset.train_split
+                + f"min_count={self.config.dataset.min_count}_quick_run={quick_run}.cache"
+            )
+            and self.config.dataset.lang != "de"
         ):
             self.distribution = pickle.load(open(cache_path, "rb"))
         else:
@@ -158,6 +165,21 @@ class EventPredictionSystem:
                 )
                 self.distribution = torch.zeros(100)
         self.model = self.init_model(self.config.model.kind)
+        if reuse_weights:
+            weights_path = (
+                Path("logs/") / reuse_weights / "checkpoints" / "model.best.pth"
+            )
+            weights_dict = torch.load(weights_path)
+            # Only load the transformer itself
+            self.model.load_state_dict(
+                {
+                    k: v
+                    for k, v in weights_dict.items()
+                    if k.startswith("transformer")
+                    and k != "transformer.embeddings.word_embeddings.weight"
+                },
+                strict=False,
+            )
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.config.learning_rate
         )
@@ -357,10 +379,15 @@ class EventPredictionSystem:
 
 
 @app.command()
-def train(quick_run: bool = False, overrides: List[str] = []):
+def train(
+    quick_run: bool = False,
+    overrides: List[str] = [],
+    reuse_weights: Optional[str] = None,
+):
     prediction_system = EventPredictionSystem(
         quick_run=quick_run,
         overrides=dict([o.split("=") for o in overrides]),
+        reuse_weights=reuse_weights,
     )
     print(prediction_system.get_baselines_results())
     prediction_system.train()
@@ -464,18 +491,20 @@ def fasttext_embedding_baseline(
             [torch.tensor(sim_list), torch.tensor(predicted_sims_words)]
         )
         corr = torch.corrcoef(corr_data)
-        print(f"Correlation (word matrix) for {dimension} is {corr[0][1].item():.2f}")
+        print(
+            f"Correlation (word matrix) for {dimension} is {corr[0][1].item() * 100:.2f}"
+        )
     for dimension, sim_list in gold_sims.items():
         corr_data = torch.stack([torch.tensor(sim_list), torch.tensor(predicted_sims)])
         corr = torch.corrcoef(corr_data)
-        print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
+        print(f"Correlation for {dimension} is {corr[0][1].item() * 100:.2f}")
     for dimension, sim_list in gold_sims.items():
         corr_data_matrix = torch.stack(
             [torch.tensor(sim_list), torch.tensor(predicted_sims_matrix)]
         )
         corr_matrix = torch.corrcoef(corr_data_matrix)
         print(
-            f"Correlation (matrix method) for {dimension} is {corr_matrix[0][1].item():.2f}"
+            f"Correlation (matrix method) for {dimension} is {corr_matrix[0][1].item() * 100:.2f}"
         )
 
 
@@ -499,14 +528,14 @@ def similarity(
     state_dict = torch.load(Path("logs") / run_name / "checkpoints" / "model.best.pth")
     prediction_system.model.load_state_dict(state_dict)
     dataset = SimilarityDataset(
-        "data/semeval_eval_en.jsonlines",
+        "data/similarity_chains_de.jsonlines",
         fast_text=prediction_system.ft,
         window_size=prediction_system.config.window_size,
         edge_markers=True,
         vocabulary=build_vocabulary(
             prediction_system.config.dataset.vocabulary_file,
             prediction_system.config.dataset.min_count,
-        ),
+        )[0],
         shuffle_chains=shuffle_chains,
         remove_entities=remove_entities,
     )
@@ -533,6 +562,7 @@ def similarity(
             on_device_batch.subject_embeddings,
             on_device_batch.iobject_embeddings,
         )
+        print(model_output.embeddings)
         for full_chain_id, embedding in zip(ids, model_output.embeddings):
             window_embeddings[full_chain_id] = window_embeddings.get(
                 full_chain_id, []
@@ -598,11 +628,11 @@ def similarity(
                 [torch.tensor(sim_list), torch.tensor(predicted_sims_matrix_match)]
             )
         )
-        correlations["matrix"][dimension] = f"{corr_matrix[0][1].item():.3f}"
-        correlations["plain"][dimension] = f"{corr[0][1].item():.3f}"
-        print(f"Correlation for {dimension} is {corr[0][1].item():.2f}")
+        correlations["matrix"][dimension] = f"{corr_matrix[0][1].item() * 100:.2f}"
+        correlations["plain"][dimension] = f"{corr[0][1].item() * 100:.2f}"
+        print(f"Correlation for {dimension} is {corr[0][1].item() * 100:.2f}")
         print(
-            f"Matrix-based correlation for {dimension} is {corr_matrix[0][1].item():.2f}"
+            f"Matrix-based correlation for {dimension} is {corr_matrix[0][1].item() * 100:.2f}"
         )
     for dim, data in correlations.items():
         data.update({"strategy": dim})
@@ -633,13 +663,15 @@ def test(run_name: str, test_set: bool = False, quick_run: bool = False):
 def get_stats(
     config_paths: List[str] = [
         "visualization_configs/config_de.yaml",
+        "visualization_configs/config_de_omp.yaml",
+        "visualization_configs/config_de_cc.yaml",
         "visualization_configs/config_en.yaml",
     ],
-    names: List[str] = ["German", "English-NYT"],
+    names: List[str] = ["German", "German-OMP", "German-CC", "English-NYT"],
     lower_bound: int = 3,
 ):
     offset = -0.1
-    colors = plt.cm.Set1(range(2))
+    colors = plt.cm.Set1(range(len(names)))
     upper_bound = 10
     out_csv = open("chain_lengths.csv", "w")
     counts = []

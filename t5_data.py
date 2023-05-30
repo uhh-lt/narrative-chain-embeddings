@@ -119,7 +119,7 @@ def mcnc_event_seq_prob(
     mask: Optional[int] = None,
     only_verbs: bool = False,
     mask_str: str = "<extra_token_0>",
-    verbose: bool = False,
+    verbose: bool = True,
     to_text_config={"include_iobj": True, "include_names": True},
 ):
     if mask is None:
@@ -152,6 +152,7 @@ def mcnc_event_seq_prob(
         for can in targets:
             print("\t", can)
     probs = sequence_probabilities(model, tokenizer, input_texts, targets)
+    print("Correctly predicted" if probs.argmax() == 0 else "Incorrectly Predicted")
     return probs.argmax() == 0
 
 
@@ -308,10 +309,10 @@ def similarity(model_path: str, include_names: bool = True):
                     ]
                 )
             )[0, 1].item()
-            print(dimension, f"{corr:.2f}")
+            print(dimension, f"{corr * 100:.2f}")
             correlations[dimension] = corr
         out = dict(
-            **{k: f"{v:.2f}" for k, v in correlations.items()}, strategy=strategy
+            **{k: f"{v * 100:.2f}" for k, v in correlations.items()}, strategy=strategy
         )
         writer.writerow(out)
 

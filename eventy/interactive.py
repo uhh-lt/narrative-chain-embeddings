@@ -28,7 +28,7 @@ option_list: "[" (VERB_LEMMA ","?)+ "]"
 GRAMMAR = """
 start: (triple_line | NEWLINE)+
 
-VERB_LEMMA_LETTERS: LETTER | "+"
+VERB_LEMMA_LETTERS: LETTER | "+" | "\u00DF" | "\u00E4" | "\u00F6" | "\u00FC" | "\u00C4" | "\u00D6" | "\u00DC"
 participant_literal: participant_list | participant | OMMITTED
 participant_list: "[" list_tail  "]"
 list_tail: participant ("," list_tail)?

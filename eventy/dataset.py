@@ -356,7 +356,7 @@ class EventWindowDataset(Dataset):
         self.vocab_set = set(vocabulary)
         self.window_size = window_size
         self.over_sampled = over_sampling
-        self.mask_random = mask_random
+        #self.mask_random = mask_random
         self.zeros = torch.zeros(300, dtype=torch.float)
         for i, line in tqdm(enumerate(in_file), desc="Reading JSON-dataset"):
             data = json.loads(line)
@@ -531,7 +531,7 @@ class SimilarityDataset(EventWindowDataset):
             if len(data["chains_1"]) == 0 or len(data["chains_2"]) == 0:
                 continue
             local_doc_ids = [data["doc_id_1"], data["doc_id_2"]]
-            for (chains_data, doc_id) in zip(
+            for chains_data, doc_id in zip(
                 [data["chains_1"], data["chains_2"]], local_doc_ids
             ):
                 i = 0
